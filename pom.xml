@@ -8,8 +8,9 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <!-- se subió desde 3.3.4 a la rama 4.0 porque snyk encontró vulnerabilidades altas y críticas
-             (tomcat, spring-web, jackson, logback) que en la 3.x ya no tienen parche gratuito -->
-        <version>4.0.8</version>
+             (tomcat, spring-web, jackson, logback) que en la 3.x ya no tienen parche gratuito.
+             la 4.0.9 trae tomcat y jackson parchados -->
+        <version>4.0.9</version>
         <relativePath/>
     </parent>
 
