@@ -1,0 +1,15 @@
+# Política de Snyk del proyecto
+# Acá quedan las vulnerabilidades que aceptamos por ahora, con el motivo y una fecha de vencimiento.
+# Cuando vence la fecha, snyk vuelve a bloquear el pipeline y hay que revisarla de nuevo.
+version: v1.25.0
+ignore:
+  SNYK-JAVA-ORGGLASSFISHJAXB-20883142:
+    - '*':
+        reason: >-
+          XXE en jaxb-core 4.0.9, llega como dependencia interna de hibernate-core.
+          No existe versión parchada todavía (snyk: "no direct upgrade or patch").
+          La app no recibe ni procesa XML: la API solo acepta JSON y el mapeo JPA
+          es con anotaciones, sin orm.xml. Se revisa de nuevo cuando salga el parche.
+        expires: 2027-01-31T00:00:00.000Z
+        created: 2026-10-25T02:30:00.000Z
+patch: {}

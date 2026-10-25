@@ -2,7 +2,7 @@
 
 ![CI/CD](https://github.com/CarlosBastias/order-manager/actions/workflows/ci-cd.yml/badge.svg)
 
-Microservicio REST para gestionar pedidos de un e-commerce (crear pedidos, agregar ítems y moverlos por sus estados). Está hecho en **Spring Boot 3.5 + Java 17**, se empaqueta en un contenedor Docker y se despliega de forma automática con un pipeline de **GitHub Actions**.
+Microservicio REST para gestionar pedidos de un e-commerce (crear pedidos, agregar ítems y moverlos por sus estados). Está hecho en **Spring Boot 4.0 + Java 17**, se empaqueta en un contenedor Docker y se despliega de forma automática con un pipeline de **GitHub Actions**.
 
 Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 
@@ -39,9 +39,9 @@ Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 
 | Área | Herramienta |
 |------|-------------|
-| Lenguaje / framework | Java 17, Spring Boot 3.5.16 (Web, Data JPA, Validation, Actuator) |
+| Lenguaje / framework | Java 17, Spring Boot 4.0.9 (Web MVC, Data JPA, Validation, Actuator) |
 | Base de datos | H2 en memoria (local y pruebas), PostgreSQL 16 (Docker) |
-| Pruebas | JUnit 5, Mockito, MockMvc |
+| Pruebas | JUnit 5, Mockito, MockMvc (`@WebMvcTest` + `@MockitoBean`) |
 | Cobertura | JaCoCo 0.8.13 |
 | Contenedores | Docker (multi-stage), Docker Compose |
 | CI/CD | GitHub Actions |
@@ -187,6 +187,7 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 - Instala Snyk CLI y se autentica con el secret `SNYK_TOKEN`.
 - Genera `snyk-report.json` y lo deja como artefacto (evidencia).
 - `snyk test --severity-threshold=high`: **si hay vulnerabilidades altas o críticas en las dependencias del `pom.xml`, falla.**
+- Respeta las excepciones documentadas en el archivo [`.snyk`](.snyk) (ver [Bloqueos y alertas](#bloqueos-y-alertas)).
 - En `main` además corre `snyk monitor`, que registra el proyecto en Snyk y manda correos cuando aparecen vulnerabilidades nuevas.
 
 ### 2. Calidad de código con SonarCloud (`code-analysis`)
@@ -215,7 +216,8 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 - Deja un resumen en la pestaña *Summary* del run con commit, rama, autor, tag de la imagen y link al run.
 
 ### 5. Alerta de falla (`notify-failure`)
-- Si cualquier etapa falla en un **push** a `main` o `dev`, se abre un **issue automático** con el commit, el autor y el link al run que falló.
+- Si cualquier etapa falla en un **push** a `main` o `dev`, marca el run con un error visible y deja en el *Summary* una tabla con el resultado de cada job.
+- Además abre un **issue automático** con el commit, el autor y el link al run que falló. Si el repo tuviera los Issues desactivados, no se cae: deja un aviso en el log.
 
 ---
 
@@ -233,6 +235,10 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 | Cualquier falla en push a `main` o `dev` | Job 5 | Se abre un issue de alerta |
 | Vulnerabilidades nuevas después del deploy | `snyk monitor` + alertas de Dependabot | Correo de Snyk / alerta en la pestaña Security |
 
+**Excepciones aceptadas (archivo [`.snyk`](.snyk))**: cuando una vulnerabilidad no tiene parche disponible y no aplica al proyecto, se registra en `.snyk` con el motivo y una fecha de vencimiento. Hoy hay una sola: `SNYK-JAVA-ORGGLASSFISHJAXB-20883142` (XXE en `jaxb-core`, dependencia interna de Hibernate). No tiene versión corregida y la API no procesa XML, solo JSON. Vence el 31-01-2027; ahí Snyk vuelve a bloquear y se revisa de nuevo. Todas las demás vulnerabilidades altas o críticas siguen bloqueando el pipeline.
+
+**Ejemplo real del bloqueo funcionando**: en las primeras ejecuciones Snyk detuvo el pipeline por vulnerabilidades altas y críticas en Spring Boot 3.3.4 (Tomcat, spring-web, Jackson, logback). Primero se subió a 3.5.16, pero esa rama ya no recibe parches gratuitos y seguían 26 vulnerabilidades; por eso se migró a **Spring Boot 4.0.9**, lo que dejó una sola vulnerabilidad sin parche (la excepción de arriba).
+
 Para que el bloqueo aplique también al **merge**, en GitHub hay que activar la protección de rama (ver [Configuración necesaria](#configuración-necesaria-en-github)).
 
 ---
@@ -246,7 +252,8 @@ Cómo se puede seguir un cambio desde el commit hasta el despliegue:
 3. **Imagen → despliegue**: el job de deploy usa la **misma imagen** que se construyó y escaneó (se pasa como artefacto, no se vuelve a construir) y queda registrado en el environment `simulated-production`.
 4. **Evidencias por run**: artefactos descargables con los reportes de pruebas, la cobertura, el reporte de Snyk y el `.jar`, más el resumen del despliegue.
 5. **Pull Requests**: los cambios entran por PR, el PR muestra el estado de cada job, y Dependabot también abre sus actualizaciones como PR, así que todo cambio de dependencias queda con su historial.
-6. **Fallas**: cada falla en push a `main` o `dev` genera un issue con el link exacto al run.
+6. **Fallas**: cada falla en push a `main` o `dev` queda marcada en el run y genera un issue con el link exacto al run.
+7. **Excepciones de seguridad**: las vulnerabilidades aceptadas quedan versionadas en `.snyk`, con motivo, fecha de creación y vencimiento.
 
 ---
 
@@ -255,7 +262,7 @@ Cómo se puede seguir un cambio desde el commit hasta el despliegue:
 - **Pruebas automatizadas**: 24 pruebas (JUnit 5 + Mockito + MockMvc) que cubren lo crítico del negocio: crear pedidos, agregar ítems, las transiciones de estado válidas, las inválidas (por ejemplo cancelar un pedido ya entregado o ya cancelado, o agregar ítems a un pedido que no está PENDING) y los códigos HTTP (200, 201, 204, 400, 404, 409).
 - **Cobertura**: JaCoCo genera el reporte en cada run; el pipeline exige mínimo 60% de líneas y SonarCloud además la mide sobre el código nuevo.
 - **Quality Gate**: se usa el gate de SonarCloud (*Sonar way*), que revisa bugs, vulnerabilidades, code smells, duplicación, security hotspots y cobertura del código nuevo. Si no pasa, no hay despliegue.
-- **Dependencias**: Dependabot revisa cada semana Maven, GitHub Actions y las imágenes base de Docker, y Snyk revisa vulnerabilidades en cada run.
+- **Dependencias**: Dependabot revisa cada semana Maven, GitHub Actions y las imágenes base de Docker, y Snyk revisa vulnerabilidades en cada run. Por los hallazgos de Snyk el proyecto se actualizó de Spring Boot 3.3.4 a 4.0.9 y el driver de PostgreSQL a 42.7.14.
 - **Imagen**: multi-stage (la imagen final solo lleva el JRE y el `.jar`), corre con un **usuario no root**, y se escanea con Snyk Container antes de desplegar.
 - **Secretos**: tokens y claves van en *GitHub Secrets*, nunca en el código; los permisos del `GITHUB_TOKEN` son de solo lectura por defecto y cada job pide solo lo que necesita.
 
@@ -324,6 +331,7 @@ Esto se hace una sola vez en el repo:
 ├── Dockerfile                   # multi-stage: maven build -> JRE, usuario no root
 ├── docker-compose.yml           # app + postgres
 ├── sonar-project.properties     # configuración de SonarCloud
+├── .snyk                        # excepciones de seguridad aceptadas (con motivo y vencimiento)
 └── pom.xml
 ```
 
@@ -337,7 +345,7 @@ Declaración según las indicaciones de la evaluación ([bibliotecas.duoc.cl/ia]
 
 | Herramienta | Para qué se usó | Cómo lo validamos |
 |-------------|-----------------|-------------------|
-| Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot, SonarCloud y Snyk, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
+| Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot, SonarCloud y Snyk, interpretar los reportes de Snyk y hacer la migración a Spring Boot 4, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
 
 La IA **no** se usó para las reflexiones individuales ni para las conclusiones.
 
