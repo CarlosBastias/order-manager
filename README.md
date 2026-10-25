@@ -194,6 +194,7 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 - Descarga las clases compiladas y los reportes del job 1 (no vuelve a compilar).
 - Corre el scanner con la configuración de [`sonar-project.properties`](sonar-project.properties): fuentes, pruebas, reporte de JaCoCo y resultados de JUnit.
 - `sonar.qualitygate.wait=true` hace que el paso espere el resultado del **Quality Gate**; **si no pasa, el job falla.**
+- El plan gratis de SonarCloud solo analiza `main` y los Pull Requests. En un push a `dev` el escaneo no corre y queda un aviso en el run; ese código ya pasó el Quality Gate en su Pull Request antes de llegar a `dev`.
 
 ### 2b. Dependency Review (`dependency-review`, solo en PR)
 - Compara las dependencias del PR contra la rama destino y **falla si se agrega alguna con vulnerabilidad alta**. Deja un comentario en el PR cuando falla.
