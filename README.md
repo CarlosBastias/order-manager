@@ -1,6 +1,6 @@
 # Order Manager API — Pipeline CI/CD
 
-![CI/CD](https://github.com/USUARIO/REPO/actions/workflows/ci-cd.yml/badge.svg)
+![CI/CD](https://github.com/CarlosBastias/order-manager/actions/workflows/ci-cd.yml/badge.svg)
 
 Microservicio REST para gestionar pedidos de un e-commerce (crear pedidos, agregar ítems y moverlos por sus estados). Está hecho en **Spring Boot 3.3 + Java 17**, se empaqueta en un contenedor Docker y se despliega de forma automática con un pipeline de **GitHub Actions**.
 
@@ -13,7 +13,7 @@ Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 | Nombre | GitHub | Parte principal |
 |--------|--------|-----------------|
 | Fabián Andrés Sánchez Vargas | [@pisKyxD](https://github.com/pisKyxD) | Pipeline CI/CD, Dependabot, SonarCloud/Snyk, documentación |
-| _NOMBRE COMPAÑERO_ | _@usuario_ | Microservicio, Dockerfile, perfil docker, docker-compose |
+| Carlos Bastias | [@CarlosBastias](https://github.com/CarlosBastias) | Microservicio, Dockerfile, perfil docker, docker-compose |
 
 ---
 
@@ -91,8 +91,8 @@ Requisitos: **Java 17** y **Maven 3.9+**.
 
 ```bash
 # clonar
-git clone https://github.com/USUARIO/REPO.git
-cd REPO
+git clone https://github.com/CarlosBastias/order-manager.git
+cd order-manager
 
 # correr pruebas + reporte de cobertura
 mvn clean verify
@@ -149,7 +149,7 @@ docker run --rm -p 8080:8080 order-manager:local   # usa el perfil por defecto (
 
 Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 
-**Se ejecuta con:** push a `main` o `develop`, Pull Request hacia `main` o `develop`, y manualmente (`workflow_dispatch`).
+**Se ejecuta con:** push a `main`, `dev` o ramas `feature/**`, Pull Request hacia `main` o `dev`, y manualmente (`workflow_dispatch`).
 
 ```
                  ┌──────────────────────────┐
@@ -215,7 +215,7 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 - Deja un resumen en la pestaña *Summary* del run con commit, rama, autor, tag de la imagen y link al run.
 
 ### 5. Alerta de falla (`notify-failure`)
-- Si cualquier etapa falla en un **push** a `main` o `develop`, se abre un **issue automático** con el commit, el autor y el link al run que falló.
+- Si cualquier etapa falla en un **push** a `main` o `dev`, se abre un **issue automático** con el commit, el autor y el link al run que falló.
 
 ---
 
@@ -230,7 +230,7 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 | Dependencias nuevas con vulnerabilidad alta (PR) | Dependency Review | El PR queda en rojo y no se puede mergear |
 | Vulnerabilidades críticas en la imagen | Snyk Container (job 3) | No se despliega |
 | App no levanta / healthcheck / smoke test | Job 4 | El despliegue queda fallido y se ven los logs |
-| Cualquier falla en push | Job 5 | Se abre un issue de alerta |
+| Cualquier falla en push a `main` o `dev` | Job 5 | Se abre un issue de alerta |
 | Vulnerabilidades nuevas después del deploy | `snyk monitor` + alertas de Dependabot | Correo de Snyk / alerta en la pestaña Security |
 
 Para que el bloqueo aplique también al **merge**, en GitHub hay que activar la protección de rama (ver [Configuración necesaria](#configuración-necesaria-en-github)).
@@ -246,7 +246,7 @@ Cómo se puede seguir un cambio desde el commit hasta el despliegue:
 3. **Imagen → despliegue**: el job de deploy usa la **misma imagen** que se construyó y escaneó (se pasa como artefacto, no se vuelve a construir) y queda registrado en el environment `simulated-production`.
 4. **Evidencias por run**: artefactos descargables con los reportes de pruebas, la cobertura, el reporte de Snyk y el `.jar`, más el resumen del despliegue.
 5. **Pull Requests**: los cambios entran por PR, el PR muestra el estado de cada job, y Dependabot también abre sus actualizaciones como PR, así que todo cambio de dependencias queda con su historial.
-6. **Fallas**: cada falla en push genera un issue con el link exacto al run.
+6. **Fallas**: cada falla en push a `main` o `dev` genera un issue con el link exacto al run.
 
 ---
 
@@ -337,7 +337,7 @@ Declaración según las indicaciones de la evaluación ([bibliotecas.duoc.cl/ia]
 
 | Herramienta | Para qué se usó | Cómo lo validamos |
 |-------------|-----------------|-------------------|
-| Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot y SonarCloud, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
+| Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot, SonarCloud y Snyk, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
 
 La IA **no** se usó para las reflexiones individuales ni para las conclusiones.
 
@@ -350,10 +350,10 @@ Referencia:
 
 > Escritas por cada integrante, sin uso de IA.
 
-### Fabián Sánchez 
+### Fabián Sánchez
 
 _(escribir acá: qué aprendí, qué me costó, cuál fue mi aporte al proyecto)_
 
-### _NOMBRE COMPAÑERO_
+### Carlos Bastias
 
 _(escribir acá: qué aprendí, qué me costó, cuál fue mi aporte al proyecto)_
