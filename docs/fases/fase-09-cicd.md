@@ -6,8 +6,8 @@ Automatizar todo el ciclo: cada cambio que se sube se compila, se prueba, se ana
 Archivo: `.github/workflows/ci-cd.yml`
 
 ## Disparadores
-- `push` a `main` y `develop`
-- `pull_request` hacia `main` y `develop`
+- `push` a `main`, `dev` y ramas `feature/**`
+- `pull_request` hacia `main` y `dev`
 - `workflow_dispatch` (ejecución manual desde la pestaña Actions)
 
 Además tiene `concurrency`: si se hace otro push a la misma rama, se cancela la ejecución anterior.
