@@ -128,11 +128,20 @@ jobs:
       # la config está en sonar-project.properties
       # sonar.qualitygate.wait=true hace que el paso espere el resultado del Quality Gate
       # y falle si no pasa -> eso bloquea el resto del pipeline
+      # el plan gratis de sonarcloud solo analiza la rama main y los pull request,
+      # por eso en un push a dev no se corre (el código de dev ya pasó el Quality Gate en su PR)
       - name: Escaneo SonarCloud
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+
+      - name: Aviso (rama sin análisis en plan gratis)
+        if: github.event_name != 'pull_request' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::notice title=SonarCloud::La rama ${{ github.ref_name }} no se analiza en el plan gratis de SonarCloud. El Quality Gate se valida en el Pull Request y en main."
+          echo "### SonarCloud: rama \`${{ github.ref_name }}\` validada por su Pull Request (el plan gratis solo analiza main y PRs)" >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
   # 2. Seguridad de dependencias con Snyk (SCA)
