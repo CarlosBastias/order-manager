@@ -2,7 +2,7 @@
 
 ![CI/CD](https://github.com/CarlosBastias/order-manager/actions/workflows/ci-cd.yml/badge.svg)
 
-Microservicio REST para gestionar pedidos de un e-commerce (crear pedidos, agregar ítems y moverlos por sus estados). Está hecho en **Spring Boot 3.3 + Java 17**, se empaqueta en un contenedor Docker y se despliega de forma automática con un pipeline de **GitHub Actions**.
+Microservicio REST para gestionar pedidos de un e-commerce (crear pedidos, agregar ítems y moverlos por sus estados). Está hecho en **Spring Boot 3.5 + Java 17**, se empaqueta en un contenedor Docker y se despliega de forma automática con un pipeline de **GitHub Actions**.
 
 Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 
@@ -39,10 +39,10 @@ Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 
 | Área | Herramienta |
 |------|-------------|
-| Lenguaje / framework | Java 17, Spring Boot 3.3.4 (Web, Data JPA, Validation, Actuator) |
+| Lenguaje / framework | Java 17, Spring Boot 3.5.16 (Web, Data JPA, Validation, Actuator) |
 | Base de datos | H2 en memoria (local y pruebas), PostgreSQL 16 (Docker) |
 | Pruebas | JUnit 5, Mockito, MockMvc |
-| Cobertura | JaCoCo 0.8.11 |
+| Cobertura | JaCoCo 0.8.13 |
 | Contenedores | Docker (multi-stage), Docker Compose |
 | CI/CD | GitHub Actions |
 | Calidad de código (SAST) | SonarCloud + Quality Gate |
@@ -149,7 +149,7 @@ docker run --rm -p 8080:8080 order-manager:local   # usa el perfil por defecto (
 
 Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 
-**Se ejecuta con:** push a `main`, `dev` o ramas `feature/**`, Pull Request hacia `main` o `dev`, y manualmente (`workflow_dispatch`).
+**Se ejecuta con:** push a `main` o `dev`, Pull Request hacia `main` o `dev`, y manualmente (`workflow_dispatch`). En las ramas `feature/*` el pipeline corre a través del Pull Request.
 
 ```
                  ┌──────────────────────────┐

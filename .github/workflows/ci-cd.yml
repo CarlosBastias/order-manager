@@ -4,9 +4,11 @@
 
 name: CI/CD order-manager
 
+# en las ramas feature no se dispara con push porque ya corre con el pull request
+# (si no, corre dos veces lo mismo y sonar analiza la rama dos veces al mismo tiempo)
 on:
   push:
-    branches: [ main, dev, develop, 'feature/**' ]
+    branches: [ main, dev, develop ]
   pull_request:
     branches: [ main, dev, develop ]
   workflow_dispatch:
