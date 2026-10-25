@@ -1,0 +1,399 @@
+# Pipeline CI/CD del microservicio order-manager
+# Etapas: build + pruebas -> seguridad (Snyk) y calidad (SonarCloud) -> imagen Docker + escaneo -> despliegue simulado con docker compose
+# Si cualquier etapa falla, las siguientes no corren (por eso cada job tiene "needs")
+
+name: CI/CD order-manager
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+# permisos mínimos por defecto, cada job pide solo lo que necesita
+permissions:
+  contents: read
+
+# si se hace otro push a la misma rama se cancela la ejecución anterior para no gastar minutos
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: order-manager
+  # tag de la imagen = sha del commit, así se sabe exactamente qué código está desplegado
+  IMAGE_TAG: ${{ github.sha }}
+  # cobertura mínima de líneas que exigimos en el pipeline (JaCoCo)
+  MIN_COVERAGE: 60
+
+jobs:
+
+  # ------------------------------------------------------------
+  # 1. Build y pruebas unitarias + cobertura JaCoCo
+  # ------------------------------------------------------------
+  build-test:
+    name: 1. Build y pruebas (JUnit + JaCoCo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+        with:
+          # sonar necesita el historial completo para saber qué código es nuevo
+          fetch-depth: 0
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # clean verify compila, corre todas las pruebas y genera el reporte de JaCoCo
+      # si una prueba falla maven termina con error y el pipeline se detiene acá
+      - name: Compilar y ejecutar pruebas (mvn clean verify)
+        run: mvn -B clean verify
+
+      # revisamos la cobertura total de líneas leyendo el csv que genera jacoco
+      - name: Verificar cobertura mínima
+        run: |
+          CSV=target/site/jacoco/jacoco.csv
+          if [ ! -f "$CSV" ]; then
+            echo "::error::No se generó el reporte de JaCoCo"
+            exit 1
+          fi
+          # columnas 8 y 9 del csv = LINE_MISSED y LINE_COVERED
+          COVERAGE=$(awk -F',' 'NR>1 {m+=$8; c+=$9} END {if (m+c==0) print 0; else printf "%.2f", (c/(m+c))*100}' "$CSV")
+          echo "Cobertura de líneas: ${COVERAGE}% (mínimo ${MIN_COVERAGE}%)"
+          echo "### Cobertura de líneas: ${COVERAGE}% (mínimo ${MIN_COVERAGE}%)" >> "$GITHUB_STEP_SUMMARY"
+          if awk "BEGIN {exit !(${COVERAGE} < ${MIN_COVERAGE})}"; then
+            echo "::error::La cobertura (${COVERAGE}%) está bajo el mínimo de ${MIN_COVERAGE}%"
+            exit 1
+          fi
+
+      # resultados de las pruebas, se suben aunque fallen para poder revisar qué pasó
+      - name: Subir reportes de pruebas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes-pruebas
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+          retention-days: 14
+
+      # el .jar queda como artefacto del run (se puede descargar desde la pestaña Actions)
+      - name: Subir JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+          retention-days: 7
+
+      # clases compiladas + reportes para que el job de sonar no tenga que compilar de nuevo
+      - name: Guardar build para el análisis
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-target
+          path: |
+            target/classes/
+            target/test-classes/
+            target/surefire-reports/
+            target/site/jacoco/jacoco.xml
+          retention-days: 1
+
+  # ------------------------------------------------------------
+  # 2. Análisis de código con SonarCloud + Quality Gate
+  # ------------------------------------------------------------
+  code-analysis:
+    name: 2. Calidad de código (SonarCloud)
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Descargar build del job anterior
+        uses: actions/download-artifact@v4
+        with:
+          name: build-target
+          path: target
+
+      # la config está en sonar-project.properties
+      # sonar.qualitygate.wait=true hace que el paso espere el resultado del Quality Gate
+      # y falle si no pasa -> eso bloquea el resto del pipeline
+      - name: Escaneo SonarCloud
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+  # ------------------------------------------------------------
+  # 2. Seguridad de dependencias con Snyk (SCA)
+  # si encuentra vulnerabilidades altas o críticas en las librerías del pom, falla y bloquea el pipeline
+  # ------------------------------------------------------------
+  security-scan:
+    name: 2. Seguridad de dependencias (Snyk)
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # snyk necesita java/maven para leer el árbol de dependencias del pom
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Instalar Snyk CLI
+        run: npm install -g snyk
+
+      - name: Autenticar Snyk
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk auth "$SNYK_TOKEN"
+
+      # reporte json para dejarlo como evidencia (se genera aunque haya hallazgos)
+      - name: Generar reporte Snyk
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --json > snyk-report.json || echo "snyk encontró hallazgos, revisar el reporte"
+
+      - name: Subir reporte Snyk
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-report
+          path: snyk-report.json
+          retention-days: 14
+
+      # este es el paso que bloquea: si hay vulnerabilidades high o critical termina con error
+      - name: Snyk test (bloqueante, severidad alta)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --severity-threshold=high
+
+      # en main se registra el proyecto en snyk para que mande alertas por correo
+      # cuando salgan vulnerabilidades nuevas en las dependencias
+      - name: Snyk monitor (alertas continuas)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk monitor --project-name=order-manager
+        continue-on-error: true
+
+  # ------------------------------------------------------------
+  # 2b. Revisión de dependencias en los Pull Request
+  # complementa a dependabot: si el PR agrega una dependencia con vulnerabilidad alta se bloquea
+  # ------------------------------------------------------------
+  dependency-review:
+    name: 2b. Revisión de dependencias (PR)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: build-test
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  # ------------------------------------------------------------
+  # 3. Build de la imagen Docker + escaneo de vulnerabilidades
+  # ------------------------------------------------------------
+  docker-build:
+    name: 3. Imagen Docker + escaneo de seguridad
+    runs-on: ubuntu-latest
+    # solo se construye la imagen si pasaron las pruebas, el Quality Gate y el escaneo de Snyk
+    needs: [ build-test, code-analysis, security-scan ]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # las labels OCI dejan registrado en la imagen de qué commit y de qué ejecución salió
+      - name: Construir imagen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.title=order-manager
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}-${{ github.run_number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Instalar Snyk CLI
+        run: npm install -g snyk
+
+      # escaneo de la imagen ya construida (sistema operativo base + jre)
+      # las librerías del jar no se repiten acá porque ya las revisó el job de snyk
+      # se bloquea si hay vulnerabilidades críticas
+      - name: Escanear imagen (Snyk Container)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk container test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            --file=Dockerfile \
+            --severity-threshold=critical \
+            --exclude-app-vulns
+
+      - name: Revisar metadata de la imagen
+        run: |
+          docker image inspect ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} --format '{{json .Config.Labels}}'
+          docker image ls ${{ env.IMAGE_NAME }}
+
+      # se guarda la imagen como artefacto para usar exactamente la misma en el despliegue
+      - name: Exportar imagen
+        run: docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} | gzip > image.tar.gz
+
+      - name: Subir imagen como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar.gz
+          retention-days: 3
+
+  # ------------------------------------------------------------
+  # 4. Despliegue simulado con docker compose (app + postgres)
+  # ------------------------------------------------------------
+  deploy:
+    name: 4. Despliegue simulado (docker compose)
+    runs-on: ubuntu-latest
+    needs: docker-build
+    timeout-minutes: 15
+    # el environment queda registrado en GitHub con cada despliegue (historial de qué commit se desplegó)
+    environment:
+      name: simulated-production
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Cargar imagen en docker
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker image ls ${{ env.IMAGE_NAME }}
+
+      # la clave de la base no va escrita en el repo: se usa el secret si existe, si no se genera una al azar
+      - name: Preparar variables del entorno
+        run: |
+          if [ -n "${{ secrets.POSTGRES_PASSWORD }}" ]; then
+            echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> "$GITHUB_ENV"
+          else
+            PASS=$(openssl rand -hex 16)
+            echo "::add-mask::$PASS"
+            echo "POSTGRES_PASSWORD=$PASS" >> "$GITHUB_ENV"
+          fi
+
+      # --no-build usa la imagen que ya se construyó y escaneó en el job anterior
+      # --wait espera a que los healthcheck de db y app estén OK
+      - name: Levantar servicios
+        run: docker compose up -d --no-build --wait --wait-timeout 180
+
+      - name: Estado de los contenedores
+        run: docker compose ps
+
+      # pruebas de humo contra la app ya desplegada
+      - name: Smoke test
+        run: |
+          set -e
+          echo "-> health"
+          curl -fsS http://localhost:8080/actuator/health | tee health.json
+          grep -q '"status":"UP"' health.json
+
+          echo "-> crear pedido"
+          curl -fsS -X POST http://localhost:8080/api/orders \
+            -H "Content-Type: application/json" \
+            -d '{"customerName":"Pipeline CI","items":[{"productName":"Teclado","quantity":2,"unitPrice":15000}]}' \
+            | tee created.json
+          # jq viene instalado en los runners de GitHub
+          ID=$(jq -r '.id' created.json)
+          STATUS=$(jq -r '.status' created.json)
+          [ "$STATUS" = "PENDING" ] || { echo "::error::El pedido nuevo debería quedar PENDING y quedó $STATUS"; exit 1; }
+
+          echo "-> consultar pedido $ID"
+          curl -fsS http://localhost:8080/api/orders/$ID
+
+          echo "-> confirmar pedido $ID"
+          curl -fsS -X PUT http://localhost:8080/api/orders/$ID/confirm | tee confirmed.json
+          [ "$(jq -r '.status' confirmed.json)" = "CONFIRMED" ] || { echo "::error::El pedido no quedó CONFIRMED"; exit 1; }
+
+          echo "-> listar pedidos"
+          curl -fsS http://localhost:8080/api/orders
+
+      - name: Logs si algo falló
+        if: failure()
+        run: docker compose logs --no-color
+
+      # resumen del despliegue en la pestaña Summary del run
+      - name: Resumen del despliegue
+        if: success()
+        run: |
+          {
+            echo "## Despliegue simulado OK"
+            echo ""
+            echo "| Dato | Valor |"
+            echo "|------|-------|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Rama | \`${{ github.ref_name }}\` |"
+            echo "| Autor | ${{ github.actor }} |"
+            echo "| Imagen | \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\` |"
+            echo "| Run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bajar servicios
+        if: always()
+        run: docker compose down -v
+
+  # ------------------------------------------------------------
+  # 5. Alerta: si algo falla en main/develop se abre un issue automático
+  # ------------------------------------------------------------
+  notify-failure:
+    name: 5. Alerta de falla
+    runs-on: ubuntu-latest
+    needs: [ build-test, security-scan, code-analysis, docker-build, deploy ]
+    if: failure() && github.event_name == 'push'
+    permissions:
+      issues: write
+    steps:
+      - name: Crear issue de alerta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Pipeline falló en ${context.ref.replace('refs/heads/', '')} (${context.sha.substring(0, 7)})`,
+              body: `El pipeline CI/CD falló.\n\n- Commit: ${context.sha}\n- Autor: ${context.actor}\n- Run: ${run}\n\nRevisar qué etapa falló (pruebas, Quality Gate, escaneo de imagen o despliegue).`
+            });

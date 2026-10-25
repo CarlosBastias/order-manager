@@ -1,0 +1,76 @@
+# Orquestación local / despliegue simulado: API order-manager + PostgreSQL
+# Uso local:     docker compose up -d --build
+# En el pipeline: docker compose up -d --no-build --wait   (usa la imagen ya construida y escaneada)
+
+services:
+  db:
+    image: postgres:16
+    container_name: order-manager-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orderdb
+      POSTGRES_USER: orderuser
+      # la clave se toma de una variable de entorno (.env local o secret en el pipeline)
+      # si no existe se usa la de desarrollo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orderpass}
+    # solo se expone en localhost de la máquina, no hacia afuera
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderuser -d orderdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks:
+      - order-net
+
+  app:
+    # en el pipeline el tag es el sha del commit, en local queda como "local"
+    image: order-manager:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: order-manager-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # sobreescribe la clave de application-docker.properties con la misma variable que usa la db
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-orderpass}
+      # la JVM usa como máximo el 75% de la memoria límite del contenedor
+      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+    ports:
+      - "8080:8080"
+    # la imagen no trae curl, así que el healthcheck usa /dev/tcp de bash para pegarle al actuator
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /actuator/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    # límites de recursos para que un contenedor no se coma toda la máquina
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          memory: 256M
+    networks:
+      - order-net
+
+volumes:
+  pg_data:
+
+networks:
+  order-net:
+    driver: bridge
