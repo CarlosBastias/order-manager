@@ -1,0 +1,16 @@
+# configuración de la app que no es secreta (la clave de la base va en un Secret aparte)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-manager-config
+  namespace: order-manager
+  labels:
+    app.kubernetes.io/name: order-manager
+data:
+  SPRING_PROFILES_ACTIVE: "docker"
+  # en kubernetes la base se llama "postgres" (nombre del Service), no "db" como en compose
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/orderdb"
+  SPRING_DATASOURCE_USERNAME: "orderuser"
+  # activa /actuator/health/liveness y /actuator/health/readiness para las probes
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"

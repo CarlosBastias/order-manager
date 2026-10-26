@@ -1,5 +1,6 @@
 # Pipeline CI/CD del microservicio order-manager
-# Etapas: build + pruebas -> seguridad (Snyk) y calidad (SonarCloud) -> imagen Docker + escaneo -> despliegue simulado con docker compose
+# Etapas: build + pruebas -> seguridad (Snyk) y calidad (SonarCloud) -> imagen Docker + escaneo
+#         -> despliegue simulado con docker compose (proxy + réplicas) y en kubernetes (kind)
 # Si cualquier etapa falla, las siguientes no corren (por eso cada job tiene "needs")
 
 name: CI/CD order-manager
@@ -130,6 +131,17 @@ jobs:
       # y falle si no pasa -> eso bloquea el resto del pipeline
       # el plan gratis de sonarcloud solo analiza la rama main y los pull request,
       # por eso en un push a dev no se corre (el código de dev ya pasó el Quality Gate en su PR)
+      # los PR de dependabot no leen los secrets normales de actions, por eso se avisa claro si falta
+      - name: Verificar token de SonarCloud
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -z "$SONAR_TOKEN" ]; then
+            echo "::error::Falta el secret SONAR_TOKEN. Si es un PR de Dependabot, hay que agregarlo en Settings -> Secrets and variables -> Dependabot"
+            exit 1
+          fi
+
       - name: Escaneo SonarCloud
         if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         uses: SonarSource/sonarqube-scan-action@v5
@@ -163,6 +175,16 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+
+      # los PR de dependabot no leen los secrets normales de actions, por eso se avisa claro si falta
+      - name: Verificar token de Snyk
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "::error::Falta el secret SNYK_TOKEN. Si es un PR de Dependabot, hay que agregarlo en Settings -> Secrets and variables -> Dependabot"
+            exit 1
+          fi
 
       - name: Instalar Snyk CLI
         run: npm install -g snyk
@@ -291,7 +313,7 @@ jobs:
           retention-days: 3
 
   # ------------------------------------------------------------
-  # 4. Despliegue simulado con docker compose (app + postgres)
+  # 4. Despliegue simulado con docker compose (proxy nginx + 2 réplicas de la app + postgres)
   # ------------------------------------------------------------
   deploy:
     name: 4. Despliegue simulado (docker compose)
@@ -327,9 +349,9 @@ jobs:
           fi
 
       # --no-build usa la imagen que ya se construyó y escaneó en el job anterior
-      # --wait espera a que los healthcheck de db y app estén OK
+      # --wait espera a que los healthcheck de db, de las réplicas de la app y del proxy estén OK
       - name: Levantar servicios
-        run: docker compose up -d --no-build --wait --wait-timeout 180
+        run: docker compose up -d --no-build --wait --wait-timeout 240
 
       - name: Estado de los contenedores
         run: docker compose ps
@@ -362,6 +384,32 @@ jobs:
           echo "-> listar pedidos"
           curl -fsS http://localhost:8080/api/orders
 
+      # el proxy agrega el header X-Upstream con la réplica que respondió,
+      # así se comprueba que el tráfico se reparte entre más de una
+      - name: Verificar balanceo entre réplicas
+        run: |
+          for i in $(seq 1 12); do
+            curl -fsS -o /dev/null -D - http://localhost:8080/actuator/health | grep -i '^x-upstream' | tr -d '\r'
+          done | sort | uniq -c | tee upstreams.txt
+          N=$(wc -l < upstreams.txt)
+          echo "Réplicas que respondieron: $N"
+          [ "$N" -ge 2 ] || { echo "::error::El tráfico no se repartió entre las réplicas"; exit 1; }
+
+      # escalamiento horizontal: se sube a 3 réplicas sin bajar el servicio
+      - name: Escalar a 3 réplicas
+        run: |
+          docker compose up -d --no-build --wait --wait-timeout 180 --scale app=3
+          RUNNING=$(docker compose ps -q app | wc -l)
+          echo "Réplicas de la app corriendo: $RUNNING"
+          [ "$RUNNING" -eq 3 ] || { echo "::error::No quedaron 3 réplicas"; exit 1; }
+          # nginx vuelve a consultar el DNS cada 10 segundos, se espera para que tome la réplica nueva
+          sleep 12
+          for i in $(seq 1 18); do
+            curl -fsS -o /dev/null -D - http://localhost:8080/actuator/health | grep -i '^x-upstream' | tr -d '\r'
+          done | sort | uniq -c | tee upstreams3.txt
+          echo "Réplicas que respondieron después de escalar: $(wc -l < upstreams3.txt)"
+          docker compose ps
+
       - name: Logs si algo falló
         if: failure()
         run: docker compose logs --no-color
@@ -379,12 +427,138 @@ jobs:
             echo "| Rama | \`${{ github.ref_name }}\` |"
             echo "| Autor | ${{ github.actor }} |"
             echo "| Imagen | \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\` |"
+            echo "| Réplicas de la app | 2 al desplegar, escalado a 3 |"
             echo "| Run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo ""
+            echo "**Reparto de peticiones entre réplicas (nginx):**"
+            echo '```'
+            cat upstreams3.txt
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Bajar servicios
         if: always()
         run: docker compose down -v
+
+  # ------------------------------------------------------------
+  # 4b. Despliegue en Kubernetes (cluster kind dentro del runner)
+  # aplica los manifiestos de k8s/ (Deployment, Service, HPA, PDB, probes) con la misma imagen
+  # ------------------------------------------------------------
+  deploy-k8s:
+    name: 4b. Despliegue en Kubernetes (kind)
+    runs-on: ubuntu-latest
+    needs: docker-build
+    timeout-minutes: 25
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      # kind necesita el .tar sin comprimir
+      - name: Descomprimir imagen
+        run: gunzip -k image.tar.gz && ls -lh image.tar
+
+      - name: Crear cluster kind
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: order-manager
+          wait: 120s
+
+      # se carga la misma imagen que se construyó y escaneó, sin bajar nada de internet
+      - name: Cargar imagen en el cluster
+        run: kind load image-archive image.tar --name order-manager
+
+      # metrics-server es lo que le da los datos de CPU/memoria al HPA
+      - name: Instalar metrics-server (para el HPA)
+        continue-on-error: true
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
+          # en kind los kubelets usan certificados propios, por eso se agrega --kubelet-insecure-tls
+          kubectl -n kube-system patch deployment metrics-server --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+      # la clave de la base no está en el repo: se genera al azar y se guarda como Secret del cluster
+      - name: Crear namespace y secret
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          PASS=$(openssl rand -hex 16)
+          echo "::add-mask::$PASS"
+          kubectl -n order-manager create secret generic order-manager-db --from-literal=POSTGRES_PASSWORD="$PASS"
+
+      # se cambia el tag "local" por el sha del commit para que quede trazable qué versión corre
+      - name: Aplicar manifiestos
+        run: |
+          kubectl kustomize k8s \
+            | sed "s|image: order-manager:local|image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}|" \
+            | kubectl apply -f -
+
+      - name: Esperar despliegue
+        run: |
+          kubectl -n order-manager rollout status deployment/postgres --timeout=180s
+          kubectl -n order-manager rollout status deployment/order-manager --timeout=300s
+
+      - name: Estado del cluster
+        run: kubectl -n order-manager get deploy,pods,svc,hpa,pdb -o wide
+
+      - name: Smoke test
+        run: |
+          set -e
+          kubectl -n order-manager port-forward svc/order-manager 8081:80 > port-forward.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8081/actuator/health/readiness && break
+            sleep 2
+          done
+          echo
+          echo "-> health"
+          curl -fsS http://localhost:8081/actuator/health | tee health.json
+          grep -q '"status":"UP"' health.json
+          echo
+          echo "-> crear pedido"
+          curl -fsS -X POST http://localhost:8081/api/orders \
+            -H "Content-Type: application/json" \
+            -d '{"customerName":"Pipeline K8s","items":[{"productName":"Mouse","quantity":1,"unitPrice":9990}]}' \
+            | tee created.json
+          [ "$(jq -r '.status' created.json)" = "PENDING" ] || { echo "::error::El pedido no quedó PENDING"; exit 1; }
+
+      # escalamiento horizontal en kubernetes: 3 réplicas detrás del mismo Service
+      - name: Escalar a 3 réplicas
+        run: |
+          kubectl -n order-manager scale deployment/order-manager --replicas=3
+          kubectl -n order-manager rollout status deployment/order-manager --timeout=180s
+          READY=$(kubectl -n order-manager get deployment order-manager -o jsonpath='{.status.readyReplicas}')
+          echo "Réplicas listas: $READY"
+          [ "$READY" -ge 3 ] || { echo "::error::No quedaron 3 réplicas listas"; exit 1; }
+          kubectl -n order-manager get pods -o wide
+          kubectl -n order-manager get hpa
+
+      - name: Diagnóstico si algo falló
+        if: failure()
+        run: |
+          kubectl -n order-manager get all
+          kubectl -n order-manager describe pods
+          kubectl -n order-manager logs -l app.kubernetes.io/name=order-manager --tail=100 --all-containers || true
+          kubectl -n order-manager get events --sort-by=.lastTimestamp | tail -40
+
+      - name: Resumen del despliegue en Kubernetes
+        if: success()
+        run: |
+          {
+            echo "## Despliegue en Kubernetes (kind) OK"
+            echo ""
+            echo "| Dato | Valor |"
+            echo "|------|-------|"
+            echo "| Imagen | \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\` |"
+            echo "| Réplicas | 2 al desplegar (mínimo del HPA), escalado a 3 |"
+            echo "| Autoescalado | HPA 2 a 5 réplicas, CPU 70% / memoria 85% |"
+            echo ""
+            echo '```'
+            kubectl -n order-manager get deploy,pods,svc,hpa,pdb
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
   # 5. Alerta: si algo falla en main o dev se avisa
@@ -394,7 +568,7 @@ jobs:
   notify-failure:
     name: 5. Alerta de falla
     runs-on: ubuntu-latest
-    needs: [ build-test, security-scan, code-analysis, docker-build, deploy ]
+    needs: [ build-test, security-scan, code-analysis, docker-build, deploy, deploy-k8s ]
     if: failure() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/develop')
     permissions:
       issues: write
@@ -411,7 +585,8 @@ jobs:
             echo "| 2. Snyk | ${{ needs.security-scan.result }} |"
             echo "| 2. SonarCloud | ${{ needs.code-analysis.result }} |"
             echo "| 3. Imagen Docker | ${{ needs.docker-build.result }} |"
-            echo "| 4. Despliegue | ${{ needs.deploy.result }} |"
+            echo "| 4. Despliegue compose | ${{ needs.deploy.result }} |"
+            echo "| 4b. Despliegue Kubernetes | ${{ needs.deploy-k8s.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Crear issue de alerta

@@ -1,0 +1,7 @@
+# namespace propio para que todo el proyecto quede separado del resto del cluster
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: order-manager
+  labels:
+    app.kubernetes.io/part-of: order-manager
