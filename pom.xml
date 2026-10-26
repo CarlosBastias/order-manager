@@ -7,7 +7,10 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.4</version>
+        <!-- se subió desde 3.3.4 a la rama 4.0 porque snyk encontró vulnerabilidades altas y críticas
+             (tomcat, spring-web, jackson, logback) que en la 3.x ya no tienen parche gratuito.
+             la 4.0.9 trae tomcat y jackson parchados -->
+        <version>4.0.9</version>
         <relativePath/>
     </parent>
 
@@ -20,12 +23,15 @@
     <properties>
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- driver de postgres con el parche de seguridad que pidió snyk -->
+        <postgresql.version>42.7.14</postgresql.version>
     </properties>
 
     <dependencies>
+        <!-- en spring boot 4 el starter "web" pasó a llamarse "webmvc" -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -44,6 +50,11 @@
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- en spring boot 4 la consola de h2 viene en un módulo aparte -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-h2console</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -52,6 +63,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- en spring boot 4 @WebMvcTest y MockMvc vienen en su propio starter de pruebas -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -65,7 +82,7 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.11</version>
+                <version>0.8.13</version>
                 <executions>
                     <execution>
                         <goals><goal>prepare-agent</goal></goals>

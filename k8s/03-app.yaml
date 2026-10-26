@@ -1,0 +1,119 @@
+# API order-manager: varias réplicas detrás de un Service que reparte el tráfico
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-manager
+  namespace: order-manager
+  labels:
+    app.kubernetes.io/name: order-manager
+    app.kubernetes.io/part-of: order-manager
+spec:
+  # 2 réplicas mínimo (el HPA puede subirlas hasta 5)
+  replicas: 2
+  revisionHistoryLimit: 5
+  # al actualizar la imagen se levanta una réplica nueva antes de bajar una vieja -> sin caída del servicio
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: order-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: order-manager
+        app.kubernetes.io/part-of: order-manager
+    spec:
+      # el contenedor corre con el usuario 10001 del Dockerfile, nunca como root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # reparte las réplicas en nodos distintos cuando hay más de un nodo
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: order-manager
+      containers:
+        - name: app
+          # en el pipeline este tag se reemplaza por el sha del commit
+          image: order-manager:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: order-manager-config
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: order-manager-db
+                  key: POSTGRES_PASSWORD
+          # requests = lo que se reserva para la réplica (lo usa el HPA para calcular el % de CPU)
+          # limits = lo máximo que puede usar
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "384Mi"
+            limits:
+              cpu: "1"
+              memory: "768Mi"
+          # startup: le da hasta ~2,5 min a spring boot para arrancar antes de revisar lo demás
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          # liveness: si falla, kubernetes reinicia el contenedor
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # readiness: si falla, el Service deja de mandarle tráfico a esa réplica
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ "ALL" ]
+          # el sistema de archivos es de solo lectura, tomcat necesita /tmp para escribir
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Service: un solo nombre (order-manager:80) que reparte entre todas las réplicas listas
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-manager
+  namespace: order-manager
+  labels:
+    app.kubernetes.io/name: order-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: order-manager
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
