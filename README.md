@@ -361,7 +361,17 @@ Referencia:
 
 ### Fabián Sánchez
 
-_(escribir acá: qué aprendí, qué me costó, cuál fue mi aporte al proyecto)_
+**¿Qué aprendí?**
+
+Aprendí a automatizar todo el proceso de build, pruebas, seguridad y despliegue con GitHub Actions. También entendí mejor cómo funcionan herramientas como Snyk, SonarCloud y Dependabot, además de los conceptos básicos de escalabilidad con Nginx y Kubernetes.
+
+**¿Qué me costó?**
+
+Claramente lo q mas me complicó fue lidiar con las vulnerabilidades q iba detectando Snyk. Tuve q actualizar Spring Boot varias veces hasta llegar a 4.0.9, lo cual me obligó a ajustar las pruebas del controlador para q fueran compatibles con esa versión.
+
+**¿Cuál fue mi aporte?**
+
+Me encargué del pipeline CI/CD completo en `.github/workflows/ci-cd.yml` ______.
 
 ### Carlos Bastias
 
