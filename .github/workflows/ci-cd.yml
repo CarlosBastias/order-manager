@@ -142,9 +142,11 @@ jobs:
             exit 1
           fi
 
+      # se usa la v6 porque las versiones 4.x y 5.x tienen una vulnerabilidad de inyección de argumentos
+      # (GHSA-5xq9-5g24-4g6f), la detectó la revisión de dependencias del propio pipeline
       - name: Escaneo SonarCloud
         if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
