@@ -371,7 +371,7 @@ Claramente lo q mas me complicó fue lidiar con las vulnerabilidades q iba detec
 
 **¿Cuál fue mi aporte?**
 
-Me encargué del pipeline CI/CD completo en `.github/workflows/ci-cd.yml` ______.
+Me encargué del pipeline CI/CD completo en `.github/workflows/ci-cd.yml`.
 
 ### Carlos Bastias
 
