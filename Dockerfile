@@ -12,12 +12,13 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:17-jre-jammy
 WORKDIR /app
 
-RUN groupadd --system appgroup && useradd --system --gid appgroup appuser
+# usuario sin privilegios con UID fijo (10001), así kubernetes puede verificar que no corre como root
+RUN groupadd --system --gid 10001 appgroup && useradd --system --uid 10001 --gid appgroup appuser
 
 COPY --from=build /app/target/order-manager-1.0.0.jar app.jar
 
 RUN chown -R appuser:appgroup /app
-USER appuser
+USER 10001:10001
 
 EXPOSE 8080
 

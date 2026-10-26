@@ -1,0 +1,57 @@
+# Autoescalado: sube réplicas cuando la CPU promedio pasa el 70% de lo reservado (requests)
+# y las baja cuando vuelve a estar tranquilo. Necesita metrics-server en el cluster.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-manager
+  namespace: order-manager
+  labels:
+    app.kubernetes.io/name: order-manager
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-manager
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 85
+  behavior:
+    # para bajar espera 2 minutos estable, así no sube y baja a cada rato
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+---
+# siempre tiene que quedar al menos 1 réplica arriba aunque se haga mantención de un nodo
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: order-manager
+  namespace: order-manager
+  labels:
+    app.kubernetes.io/name: order-manager
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: order-manager

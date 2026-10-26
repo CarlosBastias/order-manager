@@ -1,6 +1,8 @@
 # Dependabot: revisa una vez por semana si hay versiones nuevas o con parches de seguridad
 # y abre un Pull Request automático para cada actualización.
 # Esos PR pasan por el mismo pipeline (pruebas, snyk, sonar), así no se mete nada roto a main.
+# OJO: los PR de dependabot no leen los secrets de Actions, por eso SONAR_TOKEN y SNYK_TOKEN
+# también tienen que estar en Settings -> Secrets and variables -> Dependabot.
 version: 2
 updates:
 
@@ -47,3 +49,16 @@ updates:
     target-branch: "main"
     commit-message:
       prefix: "deps(docker)"
+
+  # imágenes del docker-compose.yml (postgres y nginx)
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 3
+    target-branch: "main"
+    commit-message:
+      prefix: "deps(compose)"
