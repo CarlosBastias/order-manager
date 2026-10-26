@@ -365,4 +365,14 @@ _(escribir acá: qué aprendí, qué me costó, cuál fue mi aporte al proyecto)
 
 ### Carlos Bastias
 
-_(escribir acá: qué aprendí, qué me costó, cuál fue mi aporte al proyecto)_
+**¿Qué aprendí?**
+
+Aprendí a empaquetar la app con Docker multi-stage, a correrla con un usuario sin permisos de root y a levantar app + base de datos juntos con docker-compose. También aprendí a usar los perfiles de Spring para separar la configuración entre local y Docker. 
+
+**¿Qué me costó?**
+
+Lo que más me complicó fue el orden de arranque. Al principio la app intentaba conectarse a PostgreSQL antes de que estuviera listo. Tuve que usar depends_on con condition: service_healthy y armar un healthcheck para la app, ya que la imagen JRE no trae curl. 
+
+**¿Cuál fue mi aporte?**
+
+Me encargué del Dockerfile, .dockerignore, docker-compose.yml (app + Postgres, red order-net, volumen pg_data, healthchecks, límites y restart: unless-stopped), y application-docker.properties. Todo esto lo desarrollé en mi rama feature/docker-orquestacion e integré a dev para dejarlo listo para el despliegue simulado del pipeline.
