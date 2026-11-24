@@ -8,6 +8,9 @@ import com.example.ordermanager.model.Order;
 import com.example.ordermanager.model.OrderItem;
 import com.example.ordermanager.model.OrderStatus;
 import com.example.ordermanager.repository.OrderRepository;
+import io.micrometer.core.instrument.Metrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,10 +19,15 @@ import java.util.List;
 @Service
 public class OrderService {
 
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     private final OrderRepository repository;
 
     public OrderService(OrderRepository repository) {
         this.repository = repository;
+        // se registra el contador al arrancar para que aparezca en 0 en todas las réplicas
+        // (si no, una réplica que aún no crea pedidos no mostraría la métrica en Prometheus)
+        Metrics.counter("ordermanager.orders.placed");
     }
 
     // ============================================================
@@ -56,7 +64,13 @@ public class OrderService {
                 ));
             }
         }
-        return repository.save(order);
+        Order saved = repository.save(order);
+        // EP3: métricas de negocio -> ordermanager_orders_placed_total y ordermanager_orders_status_changes_total
+        Metrics.counter("ordermanager.orders.placed").increment();
+        // no se escribe el nombre del cliente en el log (dato personal), solo el id del pedido
+        log.info("Pedido {} creado con {} ítems", saved.getId(),
+                saved.getItems() == null ? 0 : saved.getItems().size());
+        return saved;
     }
 
     // ============================================================
@@ -114,8 +128,11 @@ public class OrderService {
             throw new InvalidOrderStateException("El pedido ya está cancelado");
         }
 
+        OrderStatus previous = order.getStatus();
         order.setStatus(OrderStatus.CANCELLED);
-        return repository.save(order);
+        Order saved = repository.save(order);
+        recordStatusChange(id, previous, OrderStatus.CANCELLED);
+        return saved;
     }
 
     // ============================================================
@@ -133,7 +150,14 @@ public class OrderService {
         }
 
         order.setStatus(target);
-        return repository.save(order);
+        Order saved = repository.save(order);
+        recordStatusChange(id, expected, target);
+        return saved;
+    }
+
+    private void recordStatusChange(Long id, OrderStatus from, OrderStatus to) {
+        Metrics.counter("ordermanager.orders.status.changes", "to", to.name()).increment();
+        log.info("Pedido {} cambió de {} a {}", id, from, to);
     }
 
     // ============================================================
@@ -146,5 +170,6 @@ public class OrderService {
             throw new OrderNotFoundException(id);
         }
         repository.deleteById(id);
+        log.info("Pedido {} eliminado", id);
     }
 }

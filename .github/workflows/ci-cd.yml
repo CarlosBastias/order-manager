@@ -386,6 +386,18 @@ jobs:
           echo "-> listar pedidos"
           curl -fsS http://localhost:8080/api/orders
 
+      # EP3: la app debe exponer sus métricas para Prometheus, incluidas las de negocio
+      # (si no aparecen, el despliegue no se considera válido y el pipeline se detiene)
+      - name: Verificar métricas (Prometheus)
+        run: |
+          set -e
+          curl -fsS http://localhost:8080/actuator/prometheus > metrics.txt
+          for m in http_server_requests_seconds_count jvm_memory_used_bytes process_cpu_usage ordermanager_orders_placed_total; do
+            grep -q "^$m" metrics.txt || { echo "::error::Falta la métrica $m en /actuator/prometheus"; exit 1; }
+            echo "OK $m"
+          done
+          echo "### Métricas expuestas: $(grep -vc '^#' metrics.txt) series en /actuator/prometheus" >> "$GITHUB_STEP_SUMMARY"
+
       # el proxy agrega el header X-Upstream con la réplica que respondió,
       # así se comprueba que el tráfico se reparte entre más de una
       - name: Verificar balanceo entre réplicas
@@ -525,6 +537,13 @@ jobs:
             -d '{"customerName":"Pipeline K8s","items":[{"productName":"Mouse","quantity":1,"unitPrice":9990}]}' \
             | tee created.json
           [ "$(jq -r '.status' created.json)" = "PENDING" ] || { echo "::error::El pedido no quedó PENDING"; exit 1; }
+          echo
+          # EP3: métricas para Prometheus disponibles en el pod desplegado
+          echo "-> métricas"
+          curl -fsS http://localhost:8081/actuator/prometheus > metrics.txt
+          grep -q '^ordermanager_orders_placed_total' metrics.txt || { echo "::error::Falta ordermanager_orders_placed_total"; exit 1; }
+          grep -q '^http_server_requests_seconds_count' metrics.txt || { echo "::error::Faltan las métricas HTTP"; exit 1; }
+          echo "métricas OK"
 
       # escalamiento horizontal en kubernetes: 3 réplicas detrás del mismo Service
       - name: Escalar a 3 réplicas
