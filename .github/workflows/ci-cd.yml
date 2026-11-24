@@ -274,13 +274,47 @@ jobs:
           comment-summary-in-pr: on-failure
 
   # ------------------------------------------------------------
+  # 2c. Auditoría de cumplimiento (scripts/audit.py)
+  # revisa secretos en el código, Dockerfile sin root, manifiestos de kubernetes con límites y probes,
+  # docker compose con límites y sin base de datos expuesta, y permisos del workflow.
+  # si encuentra un ERROR el pipeline se detiene antes de construir la imagen
+  # ------------------------------------------------------------
+  audit:
+    name: 2c. Auditoría de cumplimiento
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias de la auditoría
+        run: pip install pyyaml==6.0.2
+
+      - name: Ejecutar auditoría
+        run: python scripts/audit.py
+
+      # el reporte queda como evidencia aunque la auditoría falle
+      - name: Subir reporte de auditoría
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: audit-report.md
+          retention-days: 30
+
+  # ------------------------------------------------------------
   # 3. Build de la imagen Docker + escaneo de vulnerabilidades
   # ------------------------------------------------------------
   docker-build:
     name: 3. Imagen Docker + escaneo de seguridad
     runs-on: ubuntu-latest
-    # solo se construye la imagen si pasaron las pruebas, el Quality Gate y el escaneo de Snyk
-    needs: [ build-test, code-analysis, security-scan ]
+    # solo se construye la imagen si pasaron las pruebas, el Quality Gate, el escaneo de Snyk y la auditoría
+    needs: [ build-test, code-analysis, security-scan, audit ]
     timeout-minutes: 20
     steps:
       - name: Checkout del código
@@ -615,7 +649,7 @@ jobs:
   ci-metrics:
     name: 4c. Métricas del pipeline
     runs-on: ubuntu-latest
-    needs: [ build-test, deploy, deploy-k8s ]
+    needs: [ build-test, audit, deploy, deploy-k8s ]
     # se ejecuta aunque falle algo, para registrar también los pipelines fallidos
     if: always() && needs.build-test.result != 'skipped'
     permissions:
@@ -628,6 +662,7 @@ jobs:
           TESTS_TOTAL: ${{ needs.build-test.outputs.tests_total }}
           TESTS_FAILED: ${{ needs.build-test.outputs.tests_failed }}
           RESULT_BUILD: ${{ needs.build-test.result }}
+          RESULT_AUDIT: ${{ needs.audit.result }}
           RESULT_DEPLOY: ${{ needs.deploy.result }}
           RESULT_K8S: ${{ needs.deploy-k8s.result }}
         with:
@@ -646,7 +681,7 @@ jobs:
             };
             const now = Date.now();
             const total = Math.round((now - new Date(run.run_started_at || run.created_at)) / 1000);
-            const ok = [process.env.RESULT_BUILD, process.env.RESULT_DEPLOY, process.env.RESULT_K8S]
+            const ok = [process.env.RESULT_BUILD, process.env.RESULT_AUDIT, process.env.RESULT_DEPLOY, process.env.RESULT_K8S]
               .every(r => r === 'success') ? 1 : 0;
             const branch = (process.env.GITHUB_HEAD_REF || context.ref.replace('refs/heads/', '')).replace(/"/g, '');
             const num = (v) => (v === undefined || v === '' ? 0 : Number(v));
@@ -714,7 +749,7 @@ jobs:
   notify-failure:
     name: 5. Alerta de falla
     runs-on: ubuntu-latest
-    needs: [ build-test, security-scan, code-analysis, docker-build, deploy, deploy-k8s ]
+    needs: [ build-test, security-scan, code-analysis, audit, docker-build, deploy, deploy-k8s ]
     if: failure() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/develop')
     permissions:
       issues: write
@@ -730,6 +765,7 @@ jobs:
             echo "| 1. Build y pruebas | ${{ needs.build-test.result }} |"
             echo "| 2. Snyk | ${{ needs.security-scan.result }} |"
             echo "| 2. SonarCloud | ${{ needs.code-analysis.result }} |"
+            echo "| 2c. Auditoría | ${{ needs.audit.result }} |"
             echo "| 3. Imagen Docker | ${{ needs.docker-build.result }} |"
             echo "| 4. Despliegue compose | ${{ needs.deploy.result }} |"
             echo "| 4b. Despliegue Kubernetes | ${{ needs.deploy-k8s.result }} |"
