@@ -9,8 +9,10 @@
         <artifactId>spring-boot-starter-parent</artifactId>
         <!-- se subió desde 3.3.4 a la rama 4.0 porque snyk encontró vulnerabilidades altas y críticas
              (tomcat, spring-web, jackson, logback) que en la 3.x ya no tienen parche gratuito.
-             la 4.0.9 trae tomcat y jackson parchados -->
-        <version>4.0.9</version>
+             luego de 4.0.9 a 4.0.10: el pipeline se detuvo porque snyk detectó una vulnerabilidad
+             crítica en jackson-databind (SNYK-JAVA-TOOLSJACKSONCORE-21761838) y cuatro altas en
+             spring-core, spring-beans, spring-web y spring-boot-actuator -->
+        <version>4.0.10</version>
         <relativePath/>
     </parent>
 
@@ -44,6 +46,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- expone las métricas de la app en /actuator/prometheus para que Prometheus las recolecte -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
             <groupId>com.h2database</groupId>

@@ -25,6 +25,11 @@ spec:
       labels:
         app.kubernetes.io/name: order-manager
         app.kubernetes.io/part-of: order-manager
+      # EP3: le indica a Prometheus que recolecte las métricas de cada réplica
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8080"
     spec:
       # el contenedor corre con el usuario 10001 del Dockerfile, nunca como root
       securityContext:
