@@ -2,8 +2,10 @@
 # Uso (desde la raíz del repo):
 #   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
 # Prometheus: http://localhost:9090   Grafana: http://localhost:3000 (admin / admin)
+# Pushgateway: http://localhost:9091 (recibe las métricas del pipeline con scripts/sync-ci-metrics.ps1)
 #
 #   app (réplicas) --/actuator/prometheus--> prometheus --> grafana (dashboard)
+#   pipeline (GitHub Actions) --ci-metrics.prom--> pushgateway --> prometheus
 
 services:
   prometheus:
@@ -23,11 +25,30 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      pushgateway:
+        condition: service_started
     deploy:
       resources:
         limits:
           cpus: "0.5"
           memory: 512M
+    networks:
+      - order-net
+
+  # guarda las últimas métricas del pipeline (cobertura, pruebas, tiempos de despliegue)
+  # para que Prometheus las recolecte igual que las de la app
+  pushgateway:
+    image: prom/pushgateway:v1.10.0
+    container_name: order-manager-pushgateway
+    restart: unless-stopped
+    # si se reinicia, basta con volver a correr scripts/sync-ci-metrics.ps1
+    ports:
+      - "127.0.0.1:9091:9091"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
     networks:
       - order-net
 
