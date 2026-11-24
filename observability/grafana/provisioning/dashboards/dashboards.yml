@@ -1,0 +1,10 @@
+# Grafana carga automáticamente los dashboards JSON de la carpeta /var/lib/grafana/dashboards
+apiVersion: 1
+providers:
+  - name: order-manager
+    folder: Observabilidad
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,20 @@
+# Prometheus: recolecta las métricas de todas las réplicas de order-manager cada 5 segundos
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # la app: se usa el DNS interno de docker -> "app" devuelve la IP de cada réplica,
+  # así si se escala con --scale app=N Prometheus encuentra las réplicas nuevas solo
+  - job_name: order-manager
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: [ app ]
+        type: A
+        port: 8080
+        refresh_interval: 10s
+
+  # el propio Prometheus (para saber que el monitoreo está vivo)
+  - job_name: prometheus
+    static_configs:
+      - targets: [ "localhost:9090" ]
