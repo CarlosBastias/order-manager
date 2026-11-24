@@ -21,11 +21,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
- * EP3: comprueba que el servicio registra las métricas de negocio que después
+ * Comprueba que el servicio registra las métricas de negocio que después
  * se ven en Prometheus/Grafana (pedidos creados y cambios de estado).
  */
 @ExtendWith(MockitoExtension.class)
-@DisplayName("OrderService - Métricas de negocio (EP3)")
+@DisplayName("OrderService - Métricas de negocio")
 class OrderMetricsTest {
 
     @Mock
@@ -59,7 +59,8 @@ class OrderMetricsTest {
         service.createOrder(req);
         service.createOrder(req);
 
-        assertEquals(2.0, registry.get("ordermanager.orders.placed").counter().count());
+        // DEMO: se espera 3 a propósito (se crean 2) para mostrar que el pipeline se detiene
+        assertEquals(3.0, registry.get("ordermanager.orders.placed").counter().count());
     }
 
     @Test
