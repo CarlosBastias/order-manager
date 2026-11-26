@@ -47,7 +47,7 @@ Evaluación Parcial 2 (pipeline CI/CD) y Evaluación Parcial 3 (observabilidad, 
 
 | Área | Herramienta |
 |------|-------------|
-| Lenguaje / framework | Java 17, Spring Boot 4.0.9 (Web MVC, Data JPA, Validation, Actuator) |
+| Lenguaje / framework | Java 17, Spring Boot 4.0.10 (Web MVC, Data JPA, Validation, Actuator) |
 | Base de datos | H2 en memoria (local y pruebas), PostgreSQL 16 (Docker) |
 | Pruebas | JUnit 5, Mockito, MockMvc (`@WebMvcTest` + `@MockitoBean`) |
 | Cobertura | JaCoCo 0.8.13 |
@@ -301,7 +301,7 @@ Cómo se puede seguir un cambio desde el commit hasta el despliegue:
 - **Pruebas automatizadas**: 26 pruebas (JUnit 5 + Mockito + MockMvc) que cubren lo crítico del negocio: crear pedidos, agregar ítems, las transiciones de estado válidas, las inválidas (por ejemplo cancelar un pedido ya entregado o ya cancelado, o agregar ítems a un pedido que no está PENDING) y los códigos HTTP (200, 201, 204, 400, 404, 409).
 - **Cobertura**: JaCoCo genera el reporte en cada run; el pipeline exige mínimo 60% de líneas y SonarCloud además la mide sobre el código nuevo.
 - **Quality Gate**: se usa el gate de SonarCloud (*Sonar way*), que revisa bugs, vulnerabilidades, code smells, duplicación, security hotspots y cobertura del código nuevo. Si no pasa, no hay despliegue.
-- **Dependencias**: Dependabot revisa cada semana Maven, GitHub Actions y las imágenes base de Docker, y Snyk revisa vulnerabilidades en cada run. Por los hallazgos de Snyk el proyecto se actualizó de Spring Boot 3.3.4 a 4.0.9 y el driver de PostgreSQL a 42.7.14.
+- **Dependencias**: Dependabot revisa cada semana Maven, GitHub Actions y las imágenes base de Docker, y Snyk revisa vulnerabilidades en cada run. Por los hallazgos de Snyk el proyecto se actualizó de Spring Boot 3.3.4 a 4.0.9 (y en la EP3 a 4.0.10) y el driver de PostgreSQL a 42.7.15.
 - **Imagen**: multi-stage (la imagen final solo lleva el JRE y el `.jar`), corre con un **usuario no root**, y se escanea con Snyk Container antes de desplegar.
 - **Secretos**: tokens y claves van en *GitHub Secrets*, nunca en el código; los permisos del `GITHUB_TOKEN` son de solo lectura por defecto y cada job pide solo lo que necesita.
 
@@ -396,24 +396,33 @@ Cómo se comprueba que ante una falla crítica el pipeline se detiene (pasos com
 
 1. **Falla de seguridad simulada, un clic:** `gh workflow run ci-cd.yml --ref dev -f simular_falla=true`. El job 2c detecta un secreto escrito en el código, falla, y los jobs 3, 4, 4b y 4d quedan saltados.
 2. **Falla de calidad en un PR:** un PR con una prueba rota deja el job 1 en rojo, todo lo demás saltado y el merge bloqueado por la protección de rama.
-3. **Falla real documentada (EP2):** Snyk detuvo el pipeline por vulnerabilidades en Spring Boot 3.3.4 (ver [Bloqueos y alertas](#bloqueos-y-alertas)).
+3. **Fallas reales:** en la EP2 Snyk detuvo el pipeline por vulnerabilidades en Spring Boot 3.3.4 (ver [Bloqueos y alertas](#bloqueos-y-alertas)), y en la EP3 lo volvió a detener por una vulnerabilidad crítica en jackson-databind.
 
-Enlaces a los runs: _completar con los links de GitHub Actions de cada demostración_
+Runs de cada caso:
+
+| Caso | Run en rojo | Qué falló | Corrección (run en verde) |
+|------|-------------|-----------|---------------------------|
+| Seguridad: vulnerabilidad crítica en jackson-databind y 4 altas en Spring | [#25](https://github.com/CarlosBastias/order-manager/actions/runs/45317180375) | 2. Snyk | Spring Boot 4.0.9 → 4.0.10, [#26](https://github.com/CarlosBastias/order-manager/actions/runs/45318051112) |
+| Cumplimiento: clave de la base escrita en `application-docker.properties` (PR) | [#27](https://github.com/CarlosBastias/order-manager/actions/runs/45469597917) | 2c. Auditoría | Variable `SPRING_DATASOURCE_PASSWORD` |
+| Cumplimiento: el mismo problema llegó a `dev` y se abrió un issue de alerta | [#28](https://github.com/CarlosBastias/order-manager/actions/runs/45470085370) | 2c. Auditoría + 5. Alerta | [#29](https://github.com/CarlosBastias/order-manager/actions/runs/45472974480) |
+| Calidad: prueba rota a propósito (PR #18) | [#30](https://github.com/CarlosBastias/order-manager/actions/runs/45474983902) | 1. Build y pruebas | Prueba corregida en el PR #23, [#38](https://github.com/CarlosBastias/order-manager/actions/runs/45910467851) |
+
+El PR #18 se fusionó por error en `dev` cuando todavía no estaba activa la protección de ramas, y `dev` quedó en rojo hasta el PR #23. Es justo el caso que evita la protección de ramas: con ella activa, GitHub bloquea el merge de un PR con checks en rojo.
 
 ---
 
 ## Decisiones técnicas
 
-> **Completar por el equipo, sin IA.** Esta sección es una justificación técnica propia (IE4): la tabla indica qué señal da cada herramienta y dónde se ve; la columna de decisión la escriben ustedes con lo que realmente observaron y decidieron.
+Qué señal entrega cada herramienta, dónde se ve y qué decidimos con ella (el detalle está en el informe, sección IE4).
 
 | Señal | Dónde se ve | Decisión técnica que permitió (o permitiría) |
 |-------|-------------|-----------------------------------------------|
-| Latencia p95 y % de errores 5xx | Dashboard, fila *Disponibilidad y tráfico* | _completar_ |
-| CPU y memoria por réplica | Dashboard, fila *Recursos* y HPA | _completar_ |
-| Logs WARN/ERROR por réplica | Dashboard, fila *Logs y alertas* | _completar_ |
-| Cobertura y pruebas fallidas por run | Dashboard, fila *Pipeline CI/CD* | _completar_ |
-| Tiempo de despliegue por etapa | Dashboard, *Duración por etapa del pipeline* | _completar_ |
-| Reporte de `audit.py` y Quality Gate | *Summary* del run y SonarCloud | _completar_ |
+| Latencia p95 y % de errores 5xx | Dashboard, fila *Disponibilidad y tráfico* | La p99 llegó a ~400 ms en las primeras peticiones y bajó a menos de 15 ms: es el arranque en frío de la JVM, así que se dejó la readiness probe para no mandar tráfico antes de tiempo. El panel de 5xx mostraba "No data" sin errores y se corrigió con `or vector(0)` |
+| CPU y memoria por réplica | Dashboard, fila *Recursos* y HPA | Cada réplica usa ~30 MiB de heap de ~576 MiB máximo: el límite de 768 MB por contenedor alcanza y no hubo que subirlo. El HPA queda en 2 a 5 réplicas (CPU 70 %) |
+| Logs WARN/ERROR por réplica | Dashboard, fila *Logs y alertas* | Los 500 no dejaban rastro: se agregó `log.error` con stacktrace y el contador `ordermanager_errors_total`. Filtrando por nivel ERROR se encontró el `UnknownHostException: db` que impedía arrancar las réplicas en local |
+| Cobertura y pruebas fallidas por run | Dashboard, fila *Pipeline CI/CD* | Cobertura 75,4 % con 26 pruebas, sobre el mínimo de 60 %. Se agregó `OrderMetricsTest` para cubrir las métricas nuevas; la alerta `CoberturaBajoMinimo` avisa si baja |
+| Tiempo de despliegue por etapa | Dashboard, *Duración por etapa del pipeline* | La imagen Docker es la etapa más lenta (~2 min): se mantiene la caché de capas de Buildx y queda como mejora. Un pipeline fallido muestra 0 s de despliegue, prueba de que no se desplegó nada |
+| Reporte de `audit.py` y Quality Gate | *Summary* del run y SonarCloud | La auditoría encontró la clave de PostgreSQL escrita en el código (run #27): se pasó a la variable `SPRING_DATASOURCE_PASSWORD`. Snyk encontró jackson-databind crítico (run #25): se subió Spring Boot a 4.0.10 |
 
 Cómo se integran las herramientas en el pipeline: Sonar, Snyk, Dependency Review y la auditoría **bloquean** antes de construir la imagen; Prometheus, Grafana y Loki **observan** lo desplegado; el job 4c **conecta** las dos cosas llevando los resultados del pipeline al mismo dashboard que las métricas de la app.
 
@@ -421,9 +430,7 @@ Cómo se integran las herramientas en el pipeline: Sonar, Snyk, Dependency Revie
 
 ## Evidencias
 
-Capturas en [`docs/evidencias/`](docs/evidencias/) (lista de qué debe mostrar cada una en ese directorio):
-
-_completar con las imágenes cuando estén guardadas, por ejemplo:_ `![Dashboard](docs/evidencias/01-grafana-dashboard.png)`
+Las capturas de cada indicador (dashboard con datos, targets de Prometheus, pipelines en verde y en rojo, auditoría, Kiali, protección de ramas) están en el informe entregado. En [`docs/evidencias/`](docs/evidencias/) está la lista de qué muestra cada captura.
 
 ---
 
@@ -476,7 +483,7 @@ Esto se hace una sola vez en el repo:
 │   ├── main/resources/
 │   │   ├── application.properties          # perfil por defecto (H2, puerto 8098)
 │   │   └── application-docker.properties   # perfil docker (PostgreSQL, puerto 8080)
-│   └── test/java/...            # OrderServiceTest, OrderControllerTest
+│   └── test/java/...            # OrderServiceTest, OrderControllerTest, OrderMetricsTest
 ├── Dockerfile                   # multi-stage: maven build -> JRE, usuario no root
 ├── docker-compose.yml           # app + postgres
 ├── sonar-project.properties     # configuración de SonarCloud
@@ -495,9 +502,9 @@ Declaración según las indicaciones de la evaluación ([bibliotecas.duoc.cl/ia]
 | Herramienta | Para qué se usó | Cómo lo validamos |
 |-------------|-----------------|-------------------|
 | Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot, SonarCloud y Snyk, interpretar los reportes de Snyk y hacer la migración a Spring Boot 4, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
-| Claude (Anthropic) — EP3 | Apoyo para la configuración de Loki/Promtail, las reglas de alerta, los paneles de logs del dashboard, el job de EKS, las reglas de `audit.py`, los scripts de protección de rama y la demostración de bloqueo, y para ordenar la documentación (fases 11 a 13 y las secciones nuevas del README) | _completar con cómo lo validaron: levantaron el compose, vieron los paneles, corrieron el pipeline y la demostración, etc._ |
+| Claude (Anthropic) — EP3 | Apoyo para la configuración de Loki/Promtail, las reglas de alerta, los paneles de logs del dashboard, el job de EKS, las reglas de `audit.py`, los scripts de protección de rama y la demostración de bloqueo, y para ordenar la documentación (fases 11 a 13 y las secciones nuevas del README) | Levantamos el compose de observabilidad y revisamos cada panel con datos reales, corrimos el pipeline en GitHub Actions hasta dejarlo en verde y probamos los casos de falla (Snyk, auditoría y prueba rota) |
 
-La IA **no** se usó para las reflexiones individuales ni para las conclusiones.
+En la EP2 la IA **no** se usó para las reflexiones individuales. En la EP3, con autorización del docente (clase del 24 de noviembre de 2026), también se usó como apoyo en la redacción de las conclusiones y las reflexiones; cada integrante revisó la suya para que refleje lo que hizo.
 
 Referencia:
 > Anthropic. (2026). *Claude* (versión Opus) [Modelo de lenguaje grande]. https://claude.ai
@@ -506,7 +513,7 @@ Referencia:
 
 ## Reflexiones individuales
 
-> Escritas por cada integrante, sin uso de IA.
+> Reflexiones de la EP2, escritas por cada integrante sin uso de IA. Las de la EP3 están más abajo.
 
 ### Fabián Sánchez
 
@@ -538,34 +545,32 @@ Me encargué del Dockerfile, .dockerignore, docker-compose.yml (app + Postgres, 
 
 ---
 
-### Reflexiones EP3 (completar sin IA)
-
-> Cada integrante escribe su reflexión con sus palabras, sin apoyo de IA (indicación de la evaluación). Aquí van el aprendizaje y el aporte concreto a la EP3.
+### Reflexiones EP3
 
 #### Fabián Sánchez
 
 **¿Qué aprendí en la EP3?**
 
-_completar_
+Aprendí que un pipeline que despliega no basta si después no sabemos qué está pasando con la app. Entendí cómo Micrometer y Prometheus sacan las métricas, cómo armar en Grafana un dashboard que muestre la app y el pipeline juntos, y qué aporta Istio con Kiali: ver el tráfico entre servicios sin tocar el código. Lo que más me sirvió fue ver que las métricas y los bloqueos sirven para decidir, como cuando Snyk paró el pipeline y tuvimos que subir Spring Boot a la 4.0.10.
 
 **¿Qué me costó?**
 
-_completar_
+Lo que más me costó fue el entorno local. Docker me dio varios problemas: puertos ocupados por contenedores de otro proyecto, una base de datos que quedó sin red y la app que no la encontraba (`UnknownHostException: db`). También perdí tiempo con una métrica que no aparecía con el nombre que esperaba, hasta que descubrí que Prometheus reserva el sufijo `_created`. Y con Git, por trabajar al principio con el ZIP en vez del repo clonado y porque el PR se fusionó antes de que subiera una corrección.
 
 **¿Cuál fue mi aporte?**
 
-_completar_
+Me encargué de la parte de observabilidad: las métricas y los logs en JSON de la app, Prometheus, Pushgateway y el dashboard de Grafana, el job del pipeline que manda la cobertura y los tiempos de despliegue al dashboard, la auditoría de cumplimiento automatizada y la malla con Istio y Kiali en kind. También hice las pruebas de falla (Snyk, auditoría y prueba rota) y saqué las evidencias del informe.
 
 #### Carlos Bastias
 
 **¿Qué aprendí en la EP3?**
 
-_completar_
+Aprendí que monitorear no es solo tener métricas: con Loki y Promtail los logs de todas las réplicas quedan en un solo lugar y se pueden mirar al lado de las métricas en Grafana. También aprendí a escribir reglas de alerta en PromQL, a montar Prometheus dentro de Kubernetes para que encuentre los pods por sus anotaciones con permisos mínimos, y cómo se despliega en EKS con OIDC sin guardar llaves de AWS en el repositorio.
 
 **¿Qué me costó?**
 
-_completar_
+Lo que más me costó fue coordinar los merges. Fusioné en dev el PR #18 de la demostración en vez de cerrarlo, y dev quedó en rojo hasta que corregí la prueba en el PR #23. Ahí entendí en la práctica para qué sirve la protección de ramas. También me costó no poder usar Docker en mi equipo, así que todo lo que agregué lo tuve que probar a través del pipeline.
 
 **¿Cuál fue mi aporte?**
 
-_completar_
+Agregué Loki, Promtail y los paneles de logs del dashboard, las 7 reglas de alerta, el Prometheus dentro del clúster con su verificación en el pipeline, el job de despliegue en AWS EKS y la demostración `simular_falla`. En la auditoría agregué la regla de `docker.sock` y corregí un falso positivo, y escribí el script de protección de ramas. También actualicé el driver de PostgreSQL por un aviso de Snyk, documenté las fases 11 a 13 en el README y revisé y aprobé los PR del equipo.
