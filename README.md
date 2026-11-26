@@ -1,10 +1,12 @@
-# Order Manager API — Pipeline CI/CD
+# Order Manager API — Pipeline CI/CD, observabilidad y cumplimiento
 
 ![CI/CD](https://github.com/CarlosBastias/order-manager/actions/workflows/ci-cd.yml/badge.svg)
 
 Microservicio REST para gestionar pedidos de un e-commerce (crear pedidos, agregar ítems y moverlos por sus estados). Está hecho en **Spring Boot 4.0 + Java 17**, se empaqueta en un contenedor Docker y se despliega de forma automática con un pipeline de **GitHub Actions**.
 
-Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
+Evaluación Parcial 2 (pipeline CI/CD) y Evaluación Parcial 3 (observabilidad, métricas y cumplimiento) — DOY0101 Ingeniería DevOps — Duoc UC.
+
+> **EP3:** a lo anterior se agregó monitoreo con Prometheus, Grafana y Loki, despliegue en Kubernetes (kind y AWS EKS), dashboard con métricas del pipeline, auditoría de cumplimiento automatizada y mecanismos que detienen el pipeline ante fallas críticas. Las secciones nuevas son [Kubernetes](#kubernetes), [Observabilidad](#observabilidad), [Cumplimiento y auditoría](#cumplimiento-y-auditoría), [Demostración del bloqueo](#demostración-del-bloqueo), [Decisiones técnicas](#decisiones-técnicas) y [Evidencias](#evidencias).
 
 ---
 
@@ -28,10 +30,16 @@ Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 7. [Trazabilidad](#trazabilidad)
 8. [Calidad](#calidad)
 9. [Orquestación de contenedores](#orquestación-de-contenedores)
-10. [Configuración necesaria en GitHub](#configuración-necesaria-en-github)
-11. [Estructura del proyecto](#estructura-del-proyecto)
-12. [Uso de IA](#uso-de-ia)
-13. [Reflexiones individuales](#reflexiones-individuales)
+10. [Kubernetes](#kubernetes)
+11. [Observabilidad](#observabilidad)
+12. [Cumplimiento y auditoría](#cumplimiento-y-auditoría)
+13. [Demostración del bloqueo](#demostración-del-bloqueo)
+14. [Decisiones técnicas](#decisiones-técnicas)
+15. [Evidencias](#evidencias)
+16. [Configuración necesaria en GitHub](#configuración-necesaria-en-github)
+17. [Estructura del proyecto](#estructura-del-proyecto)
+18. [Uso de IA](#uso-de-ia)
+19. [Reflexiones individuales](#reflexiones-individuales)
 
 ---
 
@@ -48,6 +56,11 @@ Evaluación Parcial 2 — DOY0101 Ingeniería DevOps — Duoc UC.
 | Calidad de código (SAST) | SonarCloud + Quality Gate |
 | Seguridad de dependencias (SCA) | Snyk, Dependabot, Dependency Review |
 | Seguridad de la imagen | Snyk Container |
+| Orquestación (EP3) | Kubernetes: kind en el pipeline y AWS EKS (opcional), HPA, PodDisruptionBudget |
+| Métricas (EP3) | Micrometer + Prometheus, Pushgateway (métricas del pipeline) |
+| Logs (EP3) | Logs JSON (ECS) → Promtail → Loki |
+| Dashboards y alertas (EP3) | Grafana (provisionado por código), reglas de alerta de Prometheus |
+| Cumplimiento (EP3) | `scripts/audit.py`, protección de rama, SonarCloud, Snyk |
 
 ---
 
@@ -155,31 +168,38 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
                  ┌──────────────────────────┐
                  │ 1. Build y pruebas       │  mvn clean verify + JaCoCo + cobertura mínima
                  └────────────┬─────────────┘
-          ┌───────────────────┼────────────────────┐
-          ▼                   ▼                    ▼
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────────┐
-│ 2. Snyk (SCA)    │ │ 2. SonarCloud    │ │ 2b. Dependency Review│ (solo en PR)
-│ deps high/crit   │ │ Quality Gate     │ │ deps high            │
-└────────┬─────────┘ └────────┬─────────┘ └──────────────────────┘
-         └──────────┬─────────┘
-                    ▼
-       ┌──────────────────────────┐
-       │ 3. Imagen Docker         │  build + labels OCI + Snyk Container
-       └────────────┬─────────────┘
-                    ▼
-       ┌──────────────────────────┐
-       │ 4. Despliegue simulado   │  docker compose up --wait + smoke test
-       └────────────┬─────────────┘
-                    ▼ (solo si algo falló en un push)
-       ┌──────────────────────────┐
-       │ 5. Alerta                │  abre un issue automático
-       └──────────────────────────┘
+     ┌────────────────┬───────┴────────┬──────────────────────┐
+     ▼                ▼                ▼                      ▼
+┌──────────┐  ┌──────────────┐  ┌───────────────┐  ┌────────────────────────┐
+│2. Snyk   │  │2. SonarCloud │  │2b. Dependency │  │2c. Auditoría           │
+│  (SCA)   │  │ Quality Gate │  │ Review (PR)   │  │ (scripts/audit.py)     │
+└────┬─────┘  └──────┬───────┘  └───────────────┘  └───────────┬────────────┘
+     └───────┬───────┴─────────────────────────────────────────┘
+             ▼
+┌──────────────────────────┐
+│ 3. Imagen Docker         │  build + labels OCI + Snyk Container
+└────────────┬─────────────┘
+   ┌─────────┼───────────────────┐
+   ▼         ▼                   ▼
+┌────────┐ ┌─────────────────┐ ┌──────────────────────────┐
+│4. Docker│ │4b. Kubernetes   │ │4d. AWS EKS (opcional,    │
+│ compose │ │ (kind) + Prom.  │ │ solo main + variables)   │
+└────┬───┘ └───────┬─────────┘ └────────────┬─────────────┘
+     └─────────────┴────────────────────────┘
+             ▼
+┌──────────────────────────┐
+│ 4c. Métricas del pipeline│  ci-metrics.prom → Pushgateway → Grafana
+└──────────────────────────┘
+             ▼ (solo si algo falló en un push)
+┌──────────────────────────┐
+│ 5. Alerta                │  abre un issue automático
+└──────────────────────────┘
 ```
 
 ### 1. Build y pruebas (`build-test`)
 - `actions/checkout` con historial completo (Sonar lo necesita para saber qué código es nuevo).
 - `actions/setup-java` con **Temurin 17** y caché de Maven para que no descargue todo cada vez.
-- `mvn -B clean verify`: compila, corre las **24 pruebas** (16 de `OrderServiceTest` y 8 de `OrderControllerTest`) y genera el reporte de JaCoCo. **Si una prueba falla, Maven termina con error y el pipeline se detiene ahí.**
+- `mvn -B clean verify`: compila, corre las **26 pruebas** (16 de `OrderServiceTest`, 8 de `OrderControllerTest` y 2 de `OrderMetricsTest`) y genera el reporte de JaCoCo. **Si una prueba falla, Maven termina con error y el pipeline se detiene ahí.**
 - Revisa la cobertura de líneas leyendo `jacoco.csv`; si queda bajo el mínimo (`MIN_COVERAGE`, 60%) el job falla.
 - Sube como artefactos: reportes de Surefire y JaCoCo, el `.jar`, y las clases compiladas para el job de Sonar.
 
@@ -216,6 +236,21 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 - Si algo falla se muestran los logs de los contenedores. Al final siempre se hace `docker compose down -v`.
 - Deja un resumen en la pestaña *Summary* del run con commit, rama, autor, tag de la imagen y link al run.
 
+### 2c. Auditoría de cumplimiento (`audit`, EP3)
+- Ejecuta [`scripts/audit.py`](scripts/audit.py): revisa secretos escritos en el código, Dockerfile, manifiestos de Kubernetes, Docker Compose y permisos del workflow (reglas en [Cumplimiento y auditoría](#cumplimiento-y-auditoría)).
+- **Si encuentra un ERROR, el job falla y no se construye la imagen** (el job 3 depende de este).
+- Deja el reporte en el *Summary* y como artefacto `audit-report`.
+
+### 4b. Despliegue en Kubernetes (`deploy-k8s`, EP3)
+- Crea un cluster **kind** en el runner, carga la misma imagen, aplica `k8s/`, espera los rollouts, hace smoke test (incluye las métricas), escala a 3 réplicas y **verifica que Prometheus, desplegado dentro del cluster, lea todas las réplicas**. Si no las lee, el despliegue falla.
+
+### 4c. Métricas del pipeline (`ci-metrics`, EP3)
+- Calcula cobertura, pruebas ejecutadas/fallidas, duración de cada etapa (incluido el tiempo de despliegue) y resultado del pipeline, y los deja como `ci-metrics.prom` (formato Prometheus). Corre siempre, también cuando el pipeline falla, para registrar los fallos.
+- `scripts/sync-ci-metrics.ps1` los publica en el Pushgateway y aparecen en el dashboard de Grafana.
+
+### 4d. Despliegue en AWS EKS (`deploy-eks`, EP3)
+- Opcional: solo corre en push a `main` si el repo tiene la variable `EKS_CLUSTER_NAME`. Sube la imagen a ECR, aplica `k8s/` en EKS (login por OIDC, sin llaves) y repite la verificación de Prometheus. Pasos de configuración en [fase 12](docs/fases/fase-12-kubernetes-y-eks.md).
+
 ### 5. Alerta de falla (`notify-failure`)
 - Si cualquier etapa falla en un **push** a `main` o `dev`, marca el run con un error visible y deja en el *Summary* una tabla con el resultado de cada job.
 - Además abre un **issue automático** con el commit, el autor y el link al run que falló. Si el repo tuviera los Issues desactivados, no se cae: deja un aviso en el log.
@@ -233,6 +268,9 @@ Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 | Dependencias nuevas con vulnerabilidad alta (PR) | Dependency Review | El PR queda en rojo y no se puede mergear |
 | Vulnerabilidades críticas en la imagen | Snyk Container (job 3) | No se despliega |
 | App no levanta / healthcheck / smoke test | Job 4 | El despliegue queda fallido y se ven los logs |
+| Auditoría de cumplimiento (secretos, Dockerfile, k8s, compose, workflow) | `audit.py` (job 2c) | No se construye la imagen ni se despliega |
+| Prometheus no lee las réplicas desplegadas en Kubernetes | Job 4b (y 4d) | El despliegue falla |
+| Falta una métrica esperada en `/actuator/prometheus` | Job 4 | El despliegue falla |
 | Cualquier falla en push a `main` o `dev` | Job 5 | Se abre un issue de alerta |
 | Vulnerabilidades nuevas después del deploy | `snyk monitor` + alertas de Dependabot | Correo de Snyk / alerta en la pestaña Security |
 
@@ -260,7 +298,7 @@ Cómo se puede seguir un cambio desde el commit hasta el despliegue:
 
 ## Calidad
 
-- **Pruebas automatizadas**: 24 pruebas (JUnit 5 + Mockito + MockMvc) que cubren lo crítico del negocio: crear pedidos, agregar ítems, las transiciones de estado válidas, las inválidas (por ejemplo cancelar un pedido ya entregado o ya cancelado, o agregar ítems a un pedido que no está PENDING) y los códigos HTTP (200, 201, 204, 400, 404, 409).
+- **Pruebas automatizadas**: 26 pruebas (JUnit 5 + Mockito + MockMvc) que cubren lo crítico del negocio: crear pedidos, agregar ítems, las transiciones de estado válidas, las inválidas (por ejemplo cancelar un pedido ya entregado o ya cancelado, o agregar ítems a un pedido que no está PENDING) y los códigos HTTP (200, 201, 204, 400, 404, 409).
 - **Cobertura**: JaCoCo genera el reporte en cada run; el pipeline exige mínimo 60% de líneas y SonarCloud además la mide sobre el código nuevo.
 - **Quality Gate**: se usa el gate de SonarCloud (*Sonar way*), que revisa bugs, vulnerabilidades, code smells, duplicación, security hotspots y cobertura del código nuevo. Si no pasa, no hay despliegue.
 - **Dependencias**: Dependabot revisa cada semana Maven, GitHub Actions y las imágenes base de Docker, y Snyk revisa vulnerabilidades en cada run. Por los hallazgos de Snyk el proyecto se actualizó de Spring Boot 3.3.4 a 4.0.9 y el driver de PostgreSQL a 42.7.14.
@@ -286,6 +324,109 @@ Puntos importantes:
 
 ---
 
+## Kubernetes
+
+Manifiestos en [`k8s/`](k8s/) (se aplican con `kubectl apply -k k8s/`):
+
+| Archivo | Qué define |
+|---------|------------|
+| `00-namespace.yaml` / `01-configmap.yaml` | Namespace `order-manager` y configuración de la app |
+| `02-postgres.yaml` | PostgreSQL con su Service |
+| `03-app.yaml` | API: 2 réplicas, rolling update sin caída, probes startup/liveness/readiness, requests y limits, usuario no root, filesystem de solo lectura, anotaciones `prometheus.io/*` |
+| `04-hpa.yaml` | Autoescalado de 2 a 5 réplicas (CPU 70 %, memoria 85 %) y PodDisruptionBudget |
+| `05-prometheus.yaml` | Prometheus dentro del cluster con permisos mínimos (Role solo para leer pods del namespace) |
+
+- **En el pipeline** el despliegue corre en un cluster kind efímero (job 4b). **En la nube**, el job 4d lo aplica en AWS EKS cuando está configurado (ver [fase 12](docs/fases/fase-12-kubernetes-y-eks.md)).
+- Prometheus descubre las réplicas por las anotaciones del pod, así que las que crea el HPA se monitorean solas.
+
+---
+
+## Observabilidad
+
+Se levanta sobre el docker-compose del proyecto:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
+# Grafana    http://localhost:3000   (admin / admin)  -> dashboard "order-manager - Observabilidad"
+# Prometheus http://localhost:9090   (/targets y /alerts)
+```
+
+```
+app (réplicas) --/actuator/prometheus--> Prometheus --> Grafana
+pipeline --ci-metrics.prom--> Pushgateway --> Prometheus
+contenedores --logs JSON--> Promtail --> Loki --> Grafana
+```
+
+| Qué se observa | Cómo | Dónde se ve |
+|----------------|------|-------------|
+| Uso: peticiones/s, latencia p50/p95/p99, pedidos creados, cambios de estado | Micrometer + métricas propias (`ordermanager_*`) | Dashboard, filas *Disponibilidad y tráfico* y *Negocio* |
+| Errores | `http_server_requests` (5xx) y `ordermanager_errors_total{type,status}` | Fila *Errores registrados* |
+| Disponibilidad | métrica `up` de cada réplica | Réplicas disponibles, disponibilidad 1 h, `/targets` |
+| CPU y memoria | `process_cpu_usage`, `jvm_memory_*` | Fila *Recursos* |
+| Logs | JSON (ECS) → Promtail → Loki; filtrables por nivel y réplica | Fila *Logs y alertas* |
+| Pipeline: cobertura, pruebas, tiempo de despliegue, duración por etapa | job 4c → Pushgateway | Fila *Pipeline CI/CD* |
+| Alertas | `observability/prometheus/alerts.yml` (servicio caído, réplica caída, 5xx > 5 %, p95 > 1 s, CPU > 85 %, pipeline fallido, cobertura < 60 %) | Prometheus `/alerts` y contador en el dashboard |
+
+Detalle completo, consultas LogQL y cómo probar cada panel: [fase 11](docs/fases/fase-11-observabilidad.md).
+
+Para llevar las métricas del último pipeline al dashboard: `.\scripts\sync-ci-metrics.ps1` (requiere GitHub CLI; con `-Loop` se repite cada 60 s). Esta sincronización es manual porque Grafana corre en la máquina local y no en la nube.
+
+---
+
+## Cumplimiento y auditoría
+
+| Política | Herramienta | Si no se cumple |
+|----------|-------------|-----------------|
+| Quality Gate de calidad y seguridad del código | SonarCloud | no se construye la imagen |
+| Sin vulnerabilidades altas/críticas en dependencias | Snyk (excepciones con vencimiento en `.snyk`) | no se construye la imagen |
+| Sin dependencias nuevas vulnerables en PR | Dependency Review | PR en rojo |
+| Cobertura mínima 60 % y pruebas en verde | JaCoCo + JUnit | se detiene el pipeline |
+| Auditoría propia: secretos, Dockerfile, k8s, compose, workflow | `scripts/audit.py` | no se construye la imagen |
+| PR obligatorio, checks en verde y 1 aprobación para entrar a `main` | Branch protection (`scripts/branch-protection.sh`) | no se puede mergear |
+
+Reglas de `audit.py` (ERROR detiene el pipeline, ADVERTENCIA solo informa): sin secretos escritos en el código ni `.env` versionado; Dockerfile sin root y con versiones fijas; en Kubernetes requests/limits, probes y contenedor propio sin root ni escalada de privilegios; en Compose límite de memoria, base de datos sin exponer y `docker.sock` solo en solo lectura; en el workflow permisos mínimos y acciones con versión fija. La tabla completa está en la [fase 13](docs/fases/fase-13-cumplimiento-y-bloqueo.md).
+
+Advertencias que se aceptan hoy (informadas, no bloquean): PostgreSQL en Kubernetes corre con la imagen oficial, que arranca como root, y Promtail monta el socket de docker en solo lectura (necesario para descubrir contenedores; solo para el entorno local).
+
+---
+
+## Demostración del bloqueo
+
+Cómo se comprueba que ante una falla crítica el pipeline se detiene (pasos completos en la [fase 13](docs/fases/fase-13-cumplimiento-y-bloqueo.md)):
+
+1. **Falla de seguridad simulada, un clic:** `gh workflow run ci-cd.yml --ref dev -f simular_falla=true`. El job 2c detecta un secreto escrito en el código, falla, y los jobs 3, 4, 4b y 4d quedan saltados.
+2. **Falla de calidad en un PR:** un PR con una prueba rota deja el job 1 en rojo, todo lo demás saltado y el merge bloqueado por la protección de rama.
+3. **Falla real documentada (EP2):** Snyk detuvo el pipeline por vulnerabilidades en Spring Boot 3.3.4 (ver [Bloqueos y alertas](#bloqueos-y-alertas)).
+
+Enlaces a los runs: _completar con los links de GitHub Actions de cada demostración_
+
+---
+
+## Decisiones técnicas
+
+> **Completar por el equipo, sin IA.** Esta sección es una justificación técnica propia (IE4): la tabla indica qué señal da cada herramienta y dónde se ve; la columna de decisión la escriben ustedes con lo que realmente observaron y decidieron.
+
+| Señal | Dónde se ve | Decisión técnica que permitió (o permitiría) |
+|-------|-------------|-----------------------------------------------|
+| Latencia p95 y % de errores 5xx | Dashboard, fila *Disponibilidad y tráfico* | _completar_ |
+| CPU y memoria por réplica | Dashboard, fila *Recursos* y HPA | _completar_ |
+| Logs WARN/ERROR por réplica | Dashboard, fila *Logs y alertas* | _completar_ |
+| Cobertura y pruebas fallidas por run | Dashboard, fila *Pipeline CI/CD* | _completar_ |
+| Tiempo de despliegue por etapa | Dashboard, *Duración por etapa del pipeline* | _completar_ |
+| Reporte de `audit.py` y Quality Gate | *Summary* del run y SonarCloud | _completar_ |
+
+Cómo se integran las herramientas en el pipeline: Sonar, Snyk, Dependency Review y la auditoría **bloquean** antes de construir la imagen; Prometheus, Grafana y Loki **observan** lo desplegado; el job 4c **conecta** las dos cosas llevando los resultados del pipeline al mismo dashboard que las métricas de la app.
+
+---
+
+## Evidencias
+
+Capturas en [`docs/evidencias/`](docs/evidencias/) (lista de qué debe mostrar cada una en ese directorio):
+
+_completar con las imágenes cuando estén guardadas, por ejemplo:_ `![Dashboard](docs/evidencias/01-grafana-dashboard.png)`
+
+---
+
 ## Configuración necesaria en GitHub
 
 Esto se hace una sola vez en el repo:
@@ -305,7 +446,9 @@ Esto se hace una sola vez en el repo:
 4. **Seguridad del repo** (*Settings → Code security*): activar *Dependency graph*, *Dependabot alerts* y *Dependabot security updates*.
 5. **Protección de la rama `main`** (*Settings → Branches → Add rule*):
    - *Require a pull request before merging*
-   - *Require status checks to pass* → marcar `1. Build y pruebas (JUnit + JaCoCo)`, `2. Seguridad de dependencias (Snyk)`, `2. Calidad de código (SonarCloud)` y `3. Imagen Docker + escaneo de seguridad`.
+   - *Require status checks to pass* → marcar `1. Build y pruebas (JUnit + JaCoCo)`, `2. Seguridad de dependencias (Snyk)`, `2. Calidad de código (SonarCloud)`, `2c. Auditoría de cumplimiento`, `3. Imagen Docker + escaneo de seguridad` y `4b. Despliegue en Kubernetes (kind)`.
+   - Se puede aplicar todo de una vez con `bash scripts/branch-protection.sh` (requiere `gh` y ser administrador del repo).
+6. **AWS EKS (opcional)**: variables `EKS_CLUSTER_NAME`, `AWS_REGION`, `AWS_ROLE_ARN` y `ECR_REPOSITORY` en *Settings → Secrets and variables → Actions → Variables* (pasos en [fase 12](docs/fases/fase-12-kubernetes-y-eks.md)). Sin ellas el job 4d se salta.
 
 ---
 
@@ -316,7 +459,12 @@ Esto se hace una sola vez en el repo:
 ├── .github/
 │   ├── dependabot.yml           # actualizaciones semanales (maven, actions, docker)
 │   └── workflows/ci-cd.yml      # pipeline CI/CD
-├── docs/fases/                  # documentación de cada fase del proyecto
+├── docs/fases/                  # documentación de cada fase del proyecto (11 a 13 = EP3)
+├── docs/evidencias/             # capturas de evidencia de la EP3
+├── k8s/                         # manifiestos de Kubernetes (app, postgres, HPA, Prometheus)
+├── observability/               # Prometheus (+ alertas), Grafana (dashboard), Loki, Promtail, Istio/Kiali
+├── scripts/                     # audit.py, sync-ci-metrics.ps1, branch-protection.sh, istio-kiali-kind.ps1
+├── docker-compose.observability.yml  # Prometheus + Pushgateway + Loki + Promtail + Grafana
 ├── src/
 │   ├── main/java/com/example/ordermanager/
 │   │   ├── controller/          # OrderController (endpoints REST)
@@ -336,7 +484,7 @@ Esto se hace una sola vez en el repo:
 └── pom.xml
 ```
 
-Documentación por fase: [Fase 06 – Contenedores](docs/fases/fase-06-contenedores.md) · [Fase 07 – Perfil Docker](docs/fases/fase-07-perfil-docker.md) · [Fase 08 – Orquestación](docs/fases/fase-08-orquestacion.md) · [Fase 09 – CI/CD](docs/fases/fase-09-cicd.md) · [Fase 10 – Documentación](docs/fases/fase-10-documentacion.md)
+Documentación por fase (EP3: [Fase 11 – Observabilidad](docs/fases/fase-11-observabilidad.md) · [Fase 12 – Kubernetes y EKS](docs/fases/fase-12-kubernetes-y-eks.md) · [Fase 13 – Cumplimiento y bloqueo](docs/fases/fase-13-cumplimiento-y-bloqueo.md)): [Fase 06 – Contenedores](docs/fases/fase-06-contenedores.md) · [Fase 07 – Perfil Docker](docs/fases/fase-07-perfil-docker.md) · [Fase 08 – Orquestación](docs/fases/fase-08-orquestacion.md) · [Fase 09 – CI/CD](docs/fases/fase-09-cicd.md) · [Fase 10 – Documentación](docs/fases/fase-10-documentacion.md)
 
 ---
 
@@ -347,6 +495,7 @@ Declaración según las indicaciones de la evaluación ([bibliotecas.duoc.cl/ia]
 | Herramienta | Para qué se usó | Cómo lo validamos |
 |-------------|-----------------|-------------------|
 | Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot, SonarCloud y Snyk, interpretar los reportes de Snyk y hacer la migración a Spring Boot 4, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
+| Claude (Anthropic) — EP3 | Apoyo para la configuración de Loki/Promtail, las reglas de alerta, los paneles de logs del dashboard, el job de EKS, las reglas de `audit.py`, los scripts de protección de rama y la demostración de bloqueo, y para ordenar la documentación (fases 11 a 13 y las secciones nuevas del README) | _completar con cómo lo validaron: levantaron el compose, vieron los paneles, corrieron el pipeline y la demostración, etc._ |
 
 La IA **no** se usó para las reflexiones individuales ni para las conclusiones.
 
@@ -386,3 +535,37 @@ Lo que más me complicó fue el orden de arranque. Al principio la app intentaba
 **¿Cuál fue mi aporte?**
 
 Me encargué del Dockerfile, .dockerignore, docker-compose.yml (app + Postgres, red order-net, volumen pg_data, healthchecks, límites y restart: unless-stopped), y application-docker.properties. Todo esto lo desarrollé en mi rama feature/docker-orquestacion e integré a dev para dejarlo listo para el despliegue simulado del pipeline.
+
+---
+
+### Reflexiones EP3 (completar sin IA)
+
+> Cada integrante escribe su reflexión con sus palabras, sin apoyo de IA (indicación de la evaluación). Aquí van el aprendizaje y el aporte concreto a la EP3.
+
+#### Fabián Sánchez
+
+**¿Qué aprendí en la EP3?**
+
+_completar_
+
+**¿Qué me costó?**
+
+_completar_
+
+**¿Cuál fue mi aporte?**
+
+_completar_
+
+#### Carlos Bastias
+
+**¿Qué aprendí en la EP3?**
+
+_completar_
+
+**¿Qué me costó?**
+
+_completar_
+
+**¿Cuál fue mi aporte?**
+
+_completar_
