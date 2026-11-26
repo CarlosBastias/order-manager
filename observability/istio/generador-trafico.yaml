@@ -1,0 +1,57 @@
+# Generador de tráfico dentro de la malla de Istio.
+# Corre en el namespace order-manager (con inyección de sidecar), así cada petición pasa por los proxies
+# y Kiali puede dibujar el grafo: generador-trafico -> order-manager -> postgres.
+# Crea pedidos, los confirma, lista y provoca un 404 cada 2 segundos.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: generador-trafico
+  namespace: order-manager
+  labels:
+    app: generador-trafico
+    app.kubernetes.io/part-of: order-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: generador-trafico
+  template:
+    metadata:
+      labels:
+        app: generador-trafico
+        version: v1
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+      containers:
+        - name: carga
+          image: curlimages/curl:8.11.1
+          command: [ "sh", "-c" ]
+          args:
+            - |
+              BASE=http://order-manager.order-manager.svc.cluster.local
+              until curl -fs "$BASE/actuator/health/readiness" > /dev/null; do echo "esperando a order-manager..."; sleep 3; done
+              while true; do
+                ID=$(curl -s -X POST "$BASE/api/orders" -H 'Content-Type: application/json' \
+                  -d '{"customerName":"Malla","items":[{"productName":"Mouse","quantity":1,"unitPrice":9990}]}' \
+                  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+                curl -s -o /dev/null -X PUT "$BASE/api/orders/$ID/confirm"
+                curl -s -o /dev/null "$BASE/api/orders"
+                curl -s -o /dev/null "$BASE/api/orders/999999"
+                echo "pedido $ID creado y confirmado"
+                sleep 2
+              done
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ "ALL" ]
