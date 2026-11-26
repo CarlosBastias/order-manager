@@ -1,0 +1,39 @@
+# Promtail: lee los logs de todos los contenedores de docker compose y los manda a Loki.
+# Descubre los contenedores por el socket de docker (montado en solo lectura).
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: contenedores
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        # solo contenedores levantados con docker compose
+        filters:
+          - name: label
+            values: [ "com.docker.compose.service" ]
+    relabel_configs:
+      # etiqueta "service" = nombre del servicio de compose (app, db, proxy, ...)
+      - source_labels: [ __meta_docker_container_label_com_docker_compose_service ]
+        target_label: service
+      # etiqueta "container" = nombre del contenedor (distingue las réplicas de la app)
+      - source_labels: [ __meta_docker_container_name ]
+        regex: '/(.*)'
+        target_label: container
+    pipeline_stages:
+      # 1) quita el envoltorio JSON que agrega docker a cada línea
+      - docker: {}
+      # 2) los logs de la app salen en JSON (formato ECS): se saca el nivel y se deja como etiqueta
+      #    (las líneas que no son JSON, como las de postgres o nginx, pasan sin etiqueta "level")
+      - json:
+          expressions:
+            level: '"log.level"'
+      - labels:
+          level:
