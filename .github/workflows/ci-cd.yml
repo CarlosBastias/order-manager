@@ -1,6 +1,8 @@
 # Pipeline CI/CD del microservicio order-manager
 # Etapas: build + pruebas -> seguridad (Snyk) y calidad (SonarCloud) -> imagen Docker + escaneo
-#         -> despliegue simulado con docker compose (proxy + réplicas) y en kubernetes (kind)
+#         -> despliegue simulado con docker compose (proxy + réplicas), en kubernetes (kind)
+#         y, si está configurado, en AWS EKS (job 4d, se salta solo si no hay variables de AWS)
+# Auditoría de cumplimiento (2c) y métricas del pipeline (4c) corren junto al resto
 # Si cualquier etapa falla, las siguientes no corren (por eso cada job tiene "needs")
 
 name: CI/CD order-manager
@@ -13,6 +15,11 @@ on:
   pull_request:
     branches: [ main, dev, develop ]
   workflow_dispatch:
+    inputs:
+      simular_falla:
+        description: "DEMO: agrega un secreto falso al código para comprobar que la auditoría detiene el pipeline"
+        type: boolean
+        default: false
 
 # permisos mínimos por defecto, cada job pide solo lo que necesita
 permissions:
@@ -286,6 +293,17 @@ jobs:
     steps:
       - name: Checkout del código
         uses: actions/checkout@v4
+
+      # SOLO PARA LA DEMOSTRACIÓN (ejecución manual con simular_falla=true):
+      # agrega un archivo con una clave escrita en el código. La auditoría lo detecta como ERROR,
+      # el job falla y el job 3 (imagen Docker) y los despliegues ya no corren.
+      # El archivo solo existe en este runner, no se sube al repositorio.
+      - name: Simular falla de seguridad (demo)
+        if: github.event_name == 'workflow_dispatch' && inputs.simular_falla
+        run: |
+          echo "db.password=admin123" > src/main/resources/demo-falla.properties
+          git add -f src/main/resources/demo-falla.properties
+          echo "::warning title=Demo::Se agregó un secreto falso para probar el bloqueo del pipeline"
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -615,6 +633,26 @@ jobs:
           kubectl -n order-manager get pods -o wide
           kubectl -n order-manager get hpa
 
+      # monitoreo dentro del cluster: Prometheus (k8s/05-prometheus.yaml) debe encontrar y leer
+      # todas las réplicas de la app (descubrimiento por anotaciones prometheus.io/*).
+      # si no ve ninguna réplica "up", el despliegue no se considera observable y el pipeline se detiene
+      - name: Verificar monitoreo en el cluster (Prometheus)
+        run: |
+          set -e
+          kubectl -n order-manager rollout status deployment/prometheus --timeout=180s
+          kubectl -n order-manager port-forward svc/prometheus 9090:9090 > prom-forward.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://localhost:9090/-/ready > /dev/null 2>&1 && break; sleep 2; done
+          UP=0
+          for i in $(seq 1 24); do
+            UP=$(curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode 'query=count(up{job="order-manager-pods"} == 1)' \
+              | jq -r '.data.result[0].value[1] // "0"')
+            echo "réplicas leídas por Prometheus: $UP"
+            [ "$UP" -ge 2 ] && break
+            sleep 5
+          done
+          [ "$UP" -ge 2 ] || { echo "::error::Prometheus no está leyendo las réplicas de order-manager"; exit 1; }
+          echo "### Prometheus en el cluster lee $UP réplicas de order-manager" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Diagnóstico si algo falló
         if: failure()
         run: |
@@ -641,6 +679,110 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
+  # 4d. Despliegue en AWS EKS (nube real)
+  # SOLO corre si el repo tiene la variable EKS_CLUSTER_NAME (Settings -> Variables -> Actions).
+  # Sin esa variable el job se salta y el resto del pipeline funciona igual.
+  # Autenticación por OIDC (sin llaves de AWS guardadas). Guía: docs/fases/fase-12-kubernetes-y-eks.md
+  # ------------------------------------------------------------
+  deploy-eks:
+    name: 4d. Despliegue en AWS EKS
+    runs-on: ubuntu-latest
+    needs: [ docker-build, deploy-k8s ]
+    if: vars.EKS_CLUSTER_NAME != '' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 25
+    environment:
+      name: production-eks
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Credenciales de AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login en ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # se sube a ECR la misma imagen que se construyó y escaneó (tag = sha del commit)
+      - name: Subir imagen a ECR
+        run: |
+          gunzip -c image.tar.gz | docker load
+          REMOTE=${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} "$REMOTE"
+          docker push "$REMOTE"
+          echo "REMOTE_IMAGE=$REMOTE" >> "$GITHUB_ENV"
+
+      - name: Conectar kubectl al cluster
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+
+      # la clave de la base solo se crea la primera vez, así no cambia entre despliegues
+      - name: Namespace y secret
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl -n order-manager get secret order-manager-db > /dev/null 2>&1 || {
+            PASS=$(openssl rand -hex 16)
+            echo "::add-mask::$PASS"
+            kubectl -n order-manager create secret generic order-manager-db --from-literal=POSTGRES_PASSWORD="$PASS"
+          }
+
+      - name: Aplicar manifiestos
+        run: |
+          kubectl kustomize k8s \
+            | sed "s|image: order-manager:local|image: ${REMOTE_IMAGE}|" \
+            | kubectl apply -f -
+
+      - name: Esperar despliegue
+        run: |
+          kubectl -n order-manager rollout status deployment/postgres --timeout=300s
+          kubectl -n order-manager rollout status deployment/order-manager --timeout=400s
+          kubectl -n order-manager rollout status deployment/prometheus --timeout=300s
+
+      - name: Smoke test y métricas
+        run: |
+          set -e
+          kubectl -n order-manager port-forward svc/order-manager 8082:80 > pf-app.log 2>&1 &
+          kubectl -n order-manager port-forward svc/prometheus 9092:9090 > pf-prom.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://localhost:8082/actuator/health/readiness > /dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://localhost:8082/actuator/health | grep -q '"status":"UP"'
+          curl -fsS http://localhost:8082/actuator/prometheus | grep -q '^ordermanager_orders_placed_total'
+          UP=0
+          for i in $(seq 1 24); do
+            UP=$(curl -fsS 'http://localhost:9092/api/v1/query' --data-urlencode 'query=count(up{job="order-manager-pods"} == 1)' \
+              | jq -r '.data.result[0].value[1] // "0"')
+            [ "$UP" -ge 2 ] && break
+            sleep 5
+          done
+          [ "$UP" -ge 2 ] || { echo "::error::Prometheus no lee las réplicas en EKS"; exit 1; }
+          kubectl -n order-manager get deploy,pods,svc,hpa -o wide
+          {
+            echo "## Despliegue en AWS EKS OK"
+            echo ""
+            echo "| Dato | Valor |"
+            echo "|------|-------|"
+            echo "| Cluster | ${{ vars.EKS_CLUSTER_NAME }} (${{ vars.AWS_REGION }}) |"
+            echo "| Imagen | \`${REMOTE_IMAGE}\` |"
+            echo "| Réplicas leídas por Prometheus | $UP |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnóstico si algo falló
+        if: failure()
+        run: |
+          kubectl -n order-manager get all || true
+          kubectl -n order-manager describe pods || true
+          kubectl -n order-manager get events --sort-by=.lastTimestamp | tail -40 || true
+
+  # ------------------------------------------------------------
   # 4c. Métricas del pipeline (cobertura, pruebas, tiempos de despliegue)
   # se generan en formato Prometheus (ci-metrics.prom) y quedan como artefacto del run;
   # el script scripts/sync-ci-metrics.ps1 las descarga y las publica en el Pushgateway
@@ -649,7 +791,7 @@ jobs:
   ci-metrics:
     name: 4c. Métricas del pipeline
     runs-on: ubuntu-latest
-    needs: [ build-test, audit, deploy, deploy-k8s ]
+    needs: [ build-test, audit, deploy, deploy-k8s, deploy-eks ]
     # se ejecuta aunque falle algo, para registrar también los pipelines fallidos
     if: always() && needs.build-test.result != 'skipped'
     permissions:
@@ -665,6 +807,7 @@ jobs:
           RESULT_AUDIT: ${{ needs.audit.result }}
           RESULT_DEPLOY: ${{ needs.deploy.result }}
           RESULT_K8S: ${{ needs.deploy-k8s.result }}
+          RESULT_EKS: ${{ needs.deploy-eks.result }}
         with:
           script: |
             const fs = require('fs');
@@ -681,8 +824,9 @@ jobs:
             };
             const now = Date.now();
             const total = Math.round((now - new Date(run.run_started_at || run.created_at)) / 1000);
+            // EKS es opcional: si no está configurado el job queda "skipped" y no cuenta como falla
             const ok = [process.env.RESULT_BUILD, process.env.RESULT_AUDIT, process.env.RESULT_DEPLOY, process.env.RESULT_K8S]
-              .every(r => r === 'success') ? 1 : 0;
+              .every(r => r === 'success') && ['success', 'skipped'].includes(process.env.RESULT_EKS) ? 1 : 0;
             const branch = (process.env.GITHUB_HEAD_REF || context.ref.replace('refs/heads/', '')).replace(/"/g, '');
             const num = (v) => (v === undefined || v === '' ? 0 : Number(v));
             const L = `branch="${branch}"`;
@@ -703,6 +847,7 @@ jobs:
               `ci_stage_duration_seconds{${L},stage="imagen_docker"} ${dur('3.')}`,
               `ci_stage_duration_seconds{${L},stage="despliegue_compose"} ${dur('4.')}`,
               `ci_stage_duration_seconds{${L},stage="despliegue_kubernetes"} ${dur('4b.')}`,
+              `ci_stage_duration_seconds{${L},stage="despliegue_eks"} ${dur('4d.')}`,
               '# HELP ci_pipeline_duration_seconds Tiempo total desde que empezó el pipeline hasta el despliegue',
               '# TYPE ci_pipeline_duration_seconds gauge',
               `ci_pipeline_duration_seconds{${L}} ${total}`,
@@ -749,7 +894,7 @@ jobs:
   notify-failure:
     name: 5. Alerta de falla
     runs-on: ubuntu-latest
-    needs: [ build-test, security-scan, code-analysis, audit, docker-build, deploy, deploy-k8s ]
+    needs: [ build-test, security-scan, code-analysis, audit, docker-build, deploy, deploy-k8s, deploy-eks ]
     if: failure() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/develop')
     permissions:
       issues: write
@@ -769,6 +914,7 @@ jobs:
             echo "| 3. Imagen Docker | ${{ needs.docker-build.result }} |"
             echo "| 4. Despliegue compose | ${{ needs.deploy.result }} |"
             echo "| 4b. Despliegue Kubernetes | ${{ needs.deploy-k8s.result }} |"
+            echo "| 4d. Despliegue AWS EKS | ${{ needs.deploy-eks.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Crear issue de alerta
