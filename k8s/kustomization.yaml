@@ -8,3 +8,4 @@ resources:
   - 02-postgres.yaml
   - 03-app.yaml
   - 04-hpa.yaml
+  - 05-prometheus.yaml
