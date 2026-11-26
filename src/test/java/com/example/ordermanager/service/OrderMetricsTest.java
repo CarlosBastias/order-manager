@@ -60,7 +60,7 @@ class OrderMetricsTest {
         service.createOrder(req);
 
         // DEMO: se espera 3 a propósito (se crean 2) para mostrar que el pipeline se detiene
-        assertEquals(3.0, registry.get("ordermanager.orders.placed").counter().count());
+        assertEquals(2.0, registry.get("ordermanager.orders.placed").counter().count());
     }
 
     @Test
