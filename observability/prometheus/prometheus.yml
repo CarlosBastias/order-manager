@@ -3,6 +3,10 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+# reglas de alerta: se evalúan cada 5 s y se ven en la pestaña Alerts de Prometheus
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # la app: se usa el DNS interno de docker -> "app" devuelve la IP de cada réplica,
   # así si se escala con --scale app=N Prometheus encuentra las réplicas nuevas solo
