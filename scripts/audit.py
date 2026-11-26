@@ -99,6 +99,9 @@ def check_secrets(files):
                     add("Secretos", "ERROR", f"{f}:{n}", f"posible {name} escrita en el código")
                     found += 1
             m = KEY_VALUE.match(line)
+            # "id-token: write" es un permiso de GitHub Actions (login por OIDC), no un secreto
+            if m and m.group(1) == "id-token":
+                continue
             if m and not value_is_safe(m.group(2)):
                 add("Secretos", "ERROR", f"{f}:{n}",
                     f"'{m.group(1)}' tiene un valor escrito en el código; debe venir de una variable de entorno o secret")
@@ -225,6 +228,15 @@ def check_compose():
             if "memory" not in limits:
                 add("Docker Compose", "ERROR", where, "sin límite de memoria (deploy.resources.limits.memory)")
                 ok = False
+            # el socket de docker da control total del host: solo se acepta en solo lectura (:ro)
+            for v in cfg.get("volumes") or []:
+                v = str(v)
+                if "docker.sock" in v:
+                    if v.endswith(":ro"):
+                        add("Docker Compose", "ADVERTENCIA", where, "monta docker.sock en solo lectura (necesario para descubrir contenedores); evitar en producción")
+                    else:
+                        add("Docker Compose", "ERROR", where, f"monta docker.sock con escritura ({v}); debe ser :ro")
+                        ok = False
             for p in cfg.get("ports") or []:
                 p = str(p)
                 parts = p.split(":")
