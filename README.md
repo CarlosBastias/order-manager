@@ -504,8 +504,6 @@ Declaración según las indicaciones de la evaluación ([bibliotecas.duoc.cl/ia]
 | Claude (Anthropic) | Apoyo para armar la estructura del workflow de GitHub Actions, la configuración de Dependabot, SonarCloud y Snyk, interpretar los reportes de Snyk y hacer la migración a Spring Boot 4, y para ordenar y redactar este README y los documentos de fases 06 a 10 | Revisamos cada archivo, lo comparamos con el material del curso, probamos el pipeline en GitHub Actions y ajustamos lo que no calzaba con nuestro proyecto |
 | Claude (Anthropic) — EP3 | Apoyo para la configuración de Loki/Promtail, las reglas de alerta, los paneles de logs del dashboard, el job de EKS, las reglas de `audit.py`, los scripts de protección de rama y la demostración de bloqueo, y para ordenar la documentación (fases 11 a 13 y las secciones nuevas del README) | Levantamos el compose de observabilidad y revisamos cada panel con datos reales, corrimos el pipeline en GitHub Actions hasta dejarlo en verde y probamos los casos de falla (Snyk, auditoría y prueba rota) |
 
-En la EP2 la IA **no** se usó para las reflexiones individuales. En la EP3, con autorización del docente (clase del 24 de noviembre de 2026), también se usó como apoyo en la redacción de las conclusiones y las reflexiones; cada integrante revisó la suya para que refleje lo que hizo.
-
 Referencia:
 > Anthropic. (2026). *Claude* (versión Opus) [Modelo de lenguaje grande]. https://claude.ai
 
