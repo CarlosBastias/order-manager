@@ -24,3 +24,9 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# reportes que genera scripts/audit.py al correrlo en local
+audit-report.md
+
+# istioctl descargado por scripts/istio-kiali-kind.ps1
+.istio/

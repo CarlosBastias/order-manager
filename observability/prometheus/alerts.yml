@@ -1,0 +1,55 @@
+# Reglas de alerta de order-manager.
+# Estado en http://localhost:9090/alerts  (también se cuentan en el dashboard de Grafana).
+groups:
+  - name: order-manager
+    rules:
+      - alert: ServicioCaido
+        expr: sum(up{job="order-manager"}) == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "order-manager no tiene ninguna réplica respondiendo"
+
+      - alert: ReplicaCaida
+        expr: count(up{job="order-manager"} == 0) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Una o más réplicas de order-manager no responden"
+
+      - alert: ErroresServidor5xxAltos
+        expr: |
+          100 * sum(rate(http_server_requests_seconds_count{application="order-manager",uri!~"/actuator.*",status=~"5.."}[5m]))
+              / clamp_min(sum(rate(http_server_requests_seconds_count{application="order-manager",uri!~"/actuator.*"}[5m])), 0.0001) > 5
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Más del 5% de las peticiones terminan en error 5xx"
+
+      - alert: LatenciaP95Alta
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{application="order-manager",uri!~"/actuator.*"}[5m]))) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "La latencia p95 supera 1 segundo"
+
+      - alert: CpuAlta
+        expr: max(process_cpu_usage{application="order-manager"}) > 0.85
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Una réplica usa más del 85% de CPU"
+
+      - alert: PipelineFallido
+        expr: max(ci_pipeline_success{job="ci_pipeline"}) == 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "El último pipeline CI/CD terminó con error"
+
+      - alert: CoberturaBajoMinimo
+        expr: max(ci_test_coverage_percent{job="ci_pipeline"}) < 60
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "La cobertura de pruebas del último pipeline quedó bajo 60%"

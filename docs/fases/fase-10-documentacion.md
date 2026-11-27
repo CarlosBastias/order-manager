@@ -12,6 +12,10 @@ Dejar el proyecto documentado para que cualquier persona (o el equipo en el futu
 | `docs/fases/fase-07-perfil-docker.md` | Perfiles de Spring (H2 vs PostgreSQL) y manejo de la clave |
 | `docs/fases/fase-08-orquestacion.md` | Docker Compose: servicios, healthchecks, dependencias y recursos |
 | `docs/fases/fase-09-cicd.md` | Pipeline de GitHub Actions, gates, alertas, seguridad y Dependabot |
+| `docs/fases/fase-11-observabilidad.md` | EP3: Prometheus, Grafana, Loki/Promtail, alertas y métricas del pipeline |
+| `docs/fases/fase-12-kubernetes-y-eks.md` | EP3: Kubernetes (kind y AWS EKS) y monitoreo dentro del cluster |
+| `docs/fases/fase-13-cumplimiento-y-bloqueo.md` | EP3: políticas de cumplimiento, auditoría y demostración de bloqueo |
+| `docs/evidencias/` | EP3: capturas de evidencia |
 | `sonar-project.properties` | Comentado con qué hace cada propiedad |
 | `.github/workflows/ci-cd.yml` | Comentado por etapa y por paso |
 | `.github/dependabot.yml` | Comentado por ecosistema |
@@ -36,3 +40,13 @@ Se declara en la sección **Uso de IA** del README: qué herramienta se usó, pa
 - [ ] Verificar que el último run del pipeline en `main` esté en verde
 - [ ] Escribir las reflexiones individuales (sin IA)
 - [ ] Subir el link del repo a AVA y mandarlo por correo al docente
+
+## Checklist de entrega EP3
+- [ ] Levantar `docker-compose.observability.yml` y verificar `/targets`, `/alerts`, dashboard y panel de logs
+- [ ] Activar protección de rama (`bash scripts/branch-protection.sh`)
+- [ ] Decidir EKS o kind (ver fase 12) y, si es EKS, crear las 4 variables de GitHub
+- [ ] Ejecutar la demostración de bloqueo (fase 13) y guardar capturas en `docs/evidencias/`
+- [ ] Completar la sección "Decisiones técnicas" del README (la escribe el equipo, sin IA)
+- [ ] Revisar la declaración de uso de IA del README y ajustarla a lo que realmente usaron
+- [ ] Cada integrante escribe su reflexión EP3 (sin IA)
+- [ ] Último run de `main` en verde, subir el link a AVA y enviarlo por correo

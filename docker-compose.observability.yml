@@ -1,0 +1,129 @@
+# Observabilidad: Prometheus + Grafana encima del despliegue de docker-compose.yml
+# Uso (desde la raíz del repo):
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
+# Prometheus: http://localhost:9090   Grafana: http://localhost:3000 (admin / admin)
+# Pushgateway: http://localhost:9091 (recibe las métricas del pipeline con scripts/sync-ci-metrics.ps1)
+#
+#   app (réplicas) --/actuator/prometheus--> prometheus --> grafana (dashboard)
+#   pipeline (GitHub Actions) --ci-metrics.prom--> pushgateway --> prometheus
+#   contenedores --logs--> promtail --> loki --> grafana (panel de logs)
+# Loki: http://localhost:3100 (solo API)
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: order-manager-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # guarda 7 días de métricas
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # reglas de alerta (se ven en http://localhost:9090/alerts y en el dashboard)
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    # solo accesible desde la máquina local
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      app:
+        condition: service_healthy
+      pushgateway:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - order-net
+
+  # guarda las últimas métricas del pipeline (cobertura, pruebas, tiempos de despliegue)
+  # para que Prometheus las recolecte igual que las de la app
+  pushgateway:
+    image: prom/pushgateway:v1.10.0
+    container_name: order-manager-pushgateway
+    restart: unless-stopped
+    # si se reinicia, basta con volver a correr scripts/sync-ci-metrics.ps1
+    ports:
+      - "127.0.0.1:9091:9091"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+    networks:
+      - order-net
+
+  # guarda los logs (consulta desde Grafana con LogQL)
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: order-manager-loki
+    restart: unless-stopped
+    command: [ "-config.file=/etc/loki/loki-config.yml" ]
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - order-net
+
+  # lee los logs de los contenedores y los manda a Loki
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: order-manager-promtail
+    restart: unless-stopped
+    command: [ "-config.file=/etc/promtail/promtail-config.yml" ]
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      # solo lectura: Promtail únicamente descubre contenedores y lee sus logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    networks:
+      - order-net
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: order-manager-grafana
+    restart: unless-stopped
+    environment:
+      # credenciales de laboratorio; en un entorno real irían en un secret
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # el dashboard del servicio se abre como página de inicio
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/order-manager.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384M
+    networks:
+      - order-net
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:

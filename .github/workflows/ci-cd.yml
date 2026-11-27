@@ -1,6 +1,8 @@
 # Pipeline CI/CD del microservicio order-manager
 # Etapas: build + pruebas -> seguridad (Snyk) y calidad (SonarCloud) -> imagen Docker + escaneo
-#         -> despliegue simulado con docker compose (proxy + réplicas) y en kubernetes (kind)
+#         -> despliegue simulado con docker compose (proxy + réplicas), en kubernetes (kind)
+#         y, si está configurado, en AWS EKS (job 4d, se salta solo si no hay variables de AWS)
+# Auditoría de cumplimiento (2c) y métricas del pipeline (4c) corren junto al resto
 # Si cualquier etapa falla, las siguientes no corren (por eso cada job tiene "needs")
 
 name: CI/CD order-manager
@@ -13,6 +15,11 @@ on:
   pull_request:
     branches: [ main, dev, develop ]
   workflow_dispatch:
+    inputs:
+      simular_falla:
+        description: "DEMO: agrega un secreto falso al código para comprobar que la auditoría detiene el pipeline"
+        type: boolean
+        default: false
 
 # permisos mínimos por defecto, cada job pide solo lo que necesita
 permissions:
@@ -39,6 +46,11 @@ jobs:
     name: 1. Build y pruebas (JUnit + JaCoCo)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # resultados que usa el job de métricas del pipeline (cobertura y cantidad de pruebas)
+    outputs:
+      coverage: ${{ steps.coverage.outputs.coverage }}
+      tests_total: ${{ steps.tests.outputs.total }}
+      tests_failed: ${{ steps.tests.outputs.failed }}
     steps:
       - name: Checkout del código
         uses: actions/checkout@v4
@@ -58,8 +70,26 @@ jobs:
       - name: Compilar y ejecutar pruebas (mvn clean verify)
         run: mvn -B clean verify
 
+      # cuenta las pruebas ejecutadas y fallidas desde los reportes de surefire
+      # (corre aunque fallen las pruebas, así la métrica también registra los fallos)
+      - name: Contar pruebas
+        id: tests
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, xml.etree.ElementTree as ET
+          total = failed = 0
+          for f in glob.glob("target/surefire-reports/TEST-*.xml"):
+              r = ET.parse(f).getroot()
+              total += int(r.get("tests", 0))
+              failed += int(r.get("failures", 0)) + int(r.get("errors", 0))
+          print(f"total={total}")
+          print(f"failed={failed}")
+          PY
+
       # revisamos la cobertura total de líneas leyendo el csv que genera jacoco
       - name: Verificar cobertura mínima
+        id: coverage
         run: |
           CSV=target/site/jacoco/jacoco.csv
           if [ ! -f "$CSV" ]; then
@@ -69,6 +99,8 @@ jobs:
           # columnas 8 y 9 del csv = LINE_MISSED y LINE_COVERED
           COVERAGE=$(awk -F',' 'NR>1 {m+=$8; c+=$9} END {if (m+c==0) print 0; else printf "%.2f", (c/(m+c))*100}' "$CSV")
           echo "Cobertura de líneas: ${COVERAGE}% (mínimo ${MIN_COVERAGE}%)"
+          # se guarda antes de validar, así queda registrada aunque no llegue al mínimo
+          echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
           echo "### Cobertura de líneas: ${COVERAGE}% (mínimo ${MIN_COVERAGE}%)" >> "$GITHUB_STEP_SUMMARY"
           if awk "BEGIN {exit !(${COVERAGE} < ${MIN_COVERAGE})}"; then
             echo "::error::La cobertura (${COVERAGE}%) está bajo el mínimo de ${MIN_COVERAGE}%"
@@ -249,13 +281,58 @@ jobs:
           comment-summary-in-pr: on-failure
 
   # ------------------------------------------------------------
+  # 2c. Auditoría de cumplimiento (scripts/audit.py)
+  # revisa secretos en el código, Dockerfile sin root, manifiestos de kubernetes con límites y probes,
+  # docker compose con límites y sin base de datos expuesta, y permisos del workflow.
+  # si encuentra un ERROR el pipeline se detiene antes de construir la imagen
+  # ------------------------------------------------------------
+  audit:
+    name: 2c. Auditoría de cumplimiento
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # SOLO PARA LA DEMOSTRACIÓN (ejecución manual con simular_falla=true):
+      # agrega un archivo con una clave escrita en el código. La auditoría lo detecta como ERROR,
+      # el job falla y el job 3 (imagen Docker) y los despliegues ya no corren.
+      # El archivo solo existe en este runner, no se sube al repositorio.
+      - name: Simular falla de seguridad (demo)
+        if: github.event_name == 'workflow_dispatch' && inputs.simular_falla
+        run: |
+          echo "db.password=admin123" > src/main/resources/demo-falla.properties
+          git add -f src/main/resources/demo-falla.properties
+          echo "::warning title=Demo::Se agregó un secreto falso para probar el bloqueo del pipeline"
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias de la auditoría
+        run: pip install pyyaml==6.0.2
+
+      - name: Ejecutar auditoría
+        run: python scripts/audit.py
+
+      # el reporte queda como evidencia aunque la auditoría falle
+      - name: Subir reporte de auditoría
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: audit-report.md
+          retention-days: 30
+
+  # ------------------------------------------------------------
   # 3. Build de la imagen Docker + escaneo de vulnerabilidades
   # ------------------------------------------------------------
   docker-build:
     name: 3. Imagen Docker + escaneo de seguridad
     runs-on: ubuntu-latest
-    # solo se construye la imagen si pasaron las pruebas, el Quality Gate y el escaneo de Snyk
-    needs: [ build-test, code-analysis, security-scan ]
+    # solo se construye la imagen si pasaron las pruebas, el Quality Gate, el escaneo de Snyk y la auditoría
+    needs: [ build-test, code-analysis, security-scan, audit ]
     timeout-minutes: 20
     steps:
       - name: Checkout del código
@@ -385,6 +462,18 @@ jobs:
 
           echo "-> listar pedidos"
           curl -fsS http://localhost:8080/api/orders
+
+      # la app debe exponer sus métricas para Prometheus, incluidas las de negocio
+      # (si no aparecen, el despliegue no se considera válido y el pipeline se detiene)
+      - name: Verificar métricas (Prometheus)
+        run: |
+          set -e
+          curl -fsS http://localhost:8080/actuator/prometheus > metrics.txt
+          for m in http_server_requests_seconds_count jvm_memory_used_bytes process_cpu_usage ordermanager_orders_placed_total; do
+            grep -q "^$m" metrics.txt || { echo "::error::Falta la métrica $m en /actuator/prometheus"; exit 1; }
+            echo "OK $m"
+          done
+          echo "### Métricas expuestas: $(grep -vc '^#' metrics.txt) series en /actuator/prometheus" >> "$GITHUB_STEP_SUMMARY"
 
       # el proxy agrega el header X-Upstream con la réplica que respondió,
       # así se comprueba que el tráfico se reparte entre más de una
@@ -525,6 +614,13 @@ jobs:
             -d '{"customerName":"Pipeline K8s","items":[{"productName":"Mouse","quantity":1,"unitPrice":9990}]}' \
             | tee created.json
           [ "$(jq -r '.status' created.json)" = "PENDING" ] || { echo "::error::El pedido no quedó PENDING"; exit 1; }
+          echo
+          # métricas para Prometheus disponibles en el pod desplegado
+          echo "-> métricas"
+          curl -fsS http://localhost:8081/actuator/prometheus > metrics.txt
+          grep -q '^ordermanager_orders_placed_total' metrics.txt || { echo "::error::Falta ordermanager_orders_placed_total"; exit 1; }
+          grep -q '^http_server_requests_seconds_count' metrics.txt || { echo "::error::Faltan las métricas HTTP"; exit 1; }
+          echo "métricas OK"
 
       # escalamiento horizontal en kubernetes: 3 réplicas detrás del mismo Service
       - name: Escalar a 3 réplicas
@@ -536,6 +632,26 @@ jobs:
           [ "$READY" -ge 3 ] || { echo "::error::No quedaron 3 réplicas listas"; exit 1; }
           kubectl -n order-manager get pods -o wide
           kubectl -n order-manager get hpa
+
+      # monitoreo dentro del cluster: Prometheus (k8s/05-prometheus.yaml) debe encontrar y leer
+      # todas las réplicas de la app (descubrimiento por anotaciones prometheus.io/*).
+      # si no ve ninguna réplica "up", el despliegue no se considera observable y el pipeline se detiene
+      - name: Verificar monitoreo en el cluster (Prometheus)
+        run: |
+          set -e
+          kubectl -n order-manager rollout status deployment/prometheus --timeout=180s
+          kubectl -n order-manager port-forward svc/prometheus 9090:9090 > prom-forward.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://localhost:9090/-/ready > /dev/null 2>&1 && break; sleep 2; done
+          UP=0
+          for i in $(seq 1 24); do
+            UP=$(curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode 'query=count(up{job="order-manager-pods"} == 1)' \
+              | jq -r '.data.result[0].value[1] // "0"')
+            echo "réplicas leídas por Prometheus: $UP"
+            [ "$UP" -ge 2 ] && break
+            sleep 5
+          done
+          [ "$UP" -ge 2 ] || { echo "::error::Prometheus no está leyendo las réplicas de order-manager"; exit 1; }
+          echo "### Prometheus en el cluster lee $UP réplicas de order-manager" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Diagnóstico si algo falló
         if: failure()
@@ -563,6 +679,214 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
+  # 4d. Despliegue en AWS EKS (nube real)
+  # SOLO corre si el repo tiene la variable EKS_CLUSTER_NAME (Settings -> Variables -> Actions).
+  # Sin esa variable el job se salta y el resto del pipeline funciona igual.
+  # Autenticación por OIDC (sin llaves de AWS guardadas). Guía: docs/fases/fase-12-kubernetes-y-eks.md
+  # ------------------------------------------------------------
+  deploy-eks:
+    name: 4d. Despliegue en AWS EKS
+    runs-on: ubuntu-latest
+    needs: [ docker-build, deploy-k8s ]
+    if: vars.EKS_CLUSTER_NAME != '' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 25
+    environment:
+      name: production-eks
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Credenciales de AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login en ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # se sube a ECR la misma imagen que se construyó y escaneó (tag = sha del commit)
+      - name: Subir imagen a ECR
+        run: |
+          gunzip -c image.tar.gz | docker load
+          REMOTE=${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} "$REMOTE"
+          docker push "$REMOTE"
+          echo "REMOTE_IMAGE=$REMOTE" >> "$GITHUB_ENV"
+
+      - name: Conectar kubectl al cluster
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+
+      # la clave de la base solo se crea la primera vez, así no cambia entre despliegues
+      - name: Namespace y secret
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl -n order-manager get secret order-manager-db > /dev/null 2>&1 || {
+            PASS=$(openssl rand -hex 16)
+            echo "::add-mask::$PASS"
+            kubectl -n order-manager create secret generic order-manager-db --from-literal=POSTGRES_PASSWORD="$PASS"
+          }
+
+      - name: Aplicar manifiestos
+        run: |
+          kubectl kustomize k8s \
+            | sed "s|image: order-manager:local|image: ${REMOTE_IMAGE}|" \
+            | kubectl apply -f -
+
+      - name: Esperar despliegue
+        run: |
+          kubectl -n order-manager rollout status deployment/postgres --timeout=300s
+          kubectl -n order-manager rollout status deployment/order-manager --timeout=400s
+          kubectl -n order-manager rollout status deployment/prometheus --timeout=300s
+
+      - name: Smoke test y métricas
+        run: |
+          set -e
+          kubectl -n order-manager port-forward svc/order-manager 8082:80 > pf-app.log 2>&1 &
+          kubectl -n order-manager port-forward svc/prometheus 9092:9090 > pf-prom.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://localhost:8082/actuator/health/readiness > /dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://localhost:8082/actuator/health | grep -q '"status":"UP"'
+          curl -fsS http://localhost:8082/actuator/prometheus | grep -q '^ordermanager_orders_placed_total'
+          UP=0
+          for i in $(seq 1 24); do
+            UP=$(curl -fsS 'http://localhost:9092/api/v1/query' --data-urlencode 'query=count(up{job="order-manager-pods"} == 1)' \
+              | jq -r '.data.result[0].value[1] // "0"')
+            [ "$UP" -ge 2 ] && break
+            sleep 5
+          done
+          [ "$UP" -ge 2 ] || { echo "::error::Prometheus no lee las réplicas en EKS"; exit 1; }
+          kubectl -n order-manager get deploy,pods,svc,hpa -o wide
+          {
+            echo "## Despliegue en AWS EKS OK"
+            echo ""
+            echo "| Dato | Valor |"
+            echo "|------|-------|"
+            echo "| Cluster | ${{ vars.EKS_CLUSTER_NAME }} (${{ vars.AWS_REGION }}) |"
+            echo "| Imagen | \`${REMOTE_IMAGE}\` |"
+            echo "| Réplicas leídas por Prometheus | $UP |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnóstico si algo falló
+        if: failure()
+        run: |
+          kubectl -n order-manager get all || true
+          kubectl -n order-manager describe pods || true
+          kubectl -n order-manager get events --sort-by=.lastTimestamp | tail -40 || true
+
+  # ------------------------------------------------------------
+  # 4c. Métricas del pipeline (cobertura, pruebas, tiempos de despliegue)
+  # se generan en formato Prometheus (ci-metrics.prom) y quedan como artefacto del run;
+  # el script scripts/sync-ci-metrics.ps1 las descarga y las publica en el Pushgateway
+  # para verlas en el dashboard de Grafana junto con las métricas de la app
+  # ------------------------------------------------------------
+  ci-metrics:
+    name: 4c. Métricas del pipeline
+    runs-on: ubuntu-latest
+    needs: [ build-test, audit, deploy, deploy-k8s, deploy-eks ]
+    # se ejecuta aunque falle algo, para registrar también los pipelines fallidos
+    if: always() && needs.build-test.result != 'skipped'
+    permissions:
+      actions: read
+    steps:
+      - name: Calcular métricas del run
+        uses: actions/github-script@v7
+        env:
+          COVERAGE: ${{ needs.build-test.outputs.coverage }}
+          TESTS_TOTAL: ${{ needs.build-test.outputs.tests_total }}
+          TESTS_FAILED: ${{ needs.build-test.outputs.tests_failed }}
+          RESULT_BUILD: ${{ needs.build-test.result }}
+          RESULT_AUDIT: ${{ needs.audit.result }}
+          RESULT_DEPLOY: ${{ needs.deploy.result }}
+          RESULT_K8S: ${{ needs.deploy-k8s.result }}
+          RESULT_EKS: ${{ needs.deploy-eks.result }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const run = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: context.runId })).data;
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun,
+              { owner, repo, run_id: context.runId, per_page: 100 });
+
+            // duración de un job en segundos (0 si no corrió)
+            const dur = (prefix) => {
+              const j = jobs.find(x => x.name.startsWith(prefix));
+              if (!j || !j.started_at || !j.completed_at) return 0;
+              return Math.round((new Date(j.completed_at) - new Date(j.started_at)) / 1000);
+            };
+            const now = Date.now();
+            const total = Math.round((now - new Date(run.run_started_at || run.created_at)) / 1000);
+            // EKS es opcional: si no está configurado el job queda "skipped" y no cuenta como falla
+            const ok = [process.env.RESULT_BUILD, process.env.RESULT_AUDIT, process.env.RESULT_DEPLOY, process.env.RESULT_K8S]
+              .every(r => r === 'success') && ['success', 'skipped'].includes(process.env.RESULT_EKS) ? 1 : 0;
+            const branch = (process.env.GITHUB_HEAD_REF || context.ref.replace('refs/heads/', '')).replace(/"/g, '');
+            const num = (v) => (v === undefined || v === '' ? 0 : Number(v));
+            const L = `branch="${branch}"`;
+
+            const lines = [
+              '# HELP ci_test_coverage_percent Cobertura de líneas (JaCoCo) del último pipeline',
+              '# TYPE ci_test_coverage_percent gauge',
+              `ci_test_coverage_percent{${L}} ${num(process.env.COVERAGE)}`,
+              '# HELP ci_tests_total Pruebas ejecutadas en el último pipeline',
+              '# TYPE ci_tests_total gauge',
+              `ci_tests_total{${L}} ${num(process.env.TESTS_TOTAL)}`,
+              '# HELP ci_tests_failed Pruebas fallidas en el último pipeline',
+              '# TYPE ci_tests_failed gauge',
+              `ci_tests_failed{${L}} ${num(process.env.TESTS_FAILED)}`,
+              '# HELP ci_stage_duration_seconds Duración de cada etapa del último pipeline',
+              '# TYPE ci_stage_duration_seconds gauge',
+              `ci_stage_duration_seconds{${L},stage="build_pruebas"} ${dur('1.')}`,
+              `ci_stage_duration_seconds{${L},stage="imagen_docker"} ${dur('3.')}`,
+              `ci_stage_duration_seconds{${L},stage="despliegue_compose"} ${dur('4.')}`,
+              `ci_stage_duration_seconds{${L},stage="despliegue_kubernetes"} ${dur('4b.')}`,
+              `ci_stage_duration_seconds{${L},stage="despliegue_eks"} ${dur('4d.')}`,
+              '# HELP ci_pipeline_duration_seconds Tiempo total desde que empezó el pipeline hasta el despliegue',
+              '# TYPE ci_pipeline_duration_seconds gauge',
+              `ci_pipeline_duration_seconds{${L}} ${total}`,
+              '# HELP ci_pipeline_success 1 si el último pipeline terminó bien, 0 si falló',
+              '# TYPE ci_pipeline_success gauge',
+              `ci_pipeline_success{${L}} ${ok}`,
+              '# HELP ci_pipeline_run_number Número del último run del pipeline',
+              '# TYPE ci_pipeline_run_number gauge',
+              `ci_pipeline_run_number{${L}} ${context.runNumber}`,
+              '# HELP ci_pipeline_last_run_timestamp_seconds Momento en que terminó el último pipeline',
+              '# TYPE ci_pipeline_last_run_timestamp_seconds gauge',
+              `ci_pipeline_last_run_timestamp_seconds{${L}} ${Math.round(now / 1000)}`,
+              ''
+            ];
+            fs.writeFileSync('ci-metrics.prom', lines.join('\n'));
+
+            await core.summary
+              .addHeading('Métricas del pipeline', 2)
+              .addTable([
+                [{ data: 'Métrica', header: true }, { data: 'Valor', header: true }],
+                ['Cobertura de líneas', `${num(process.env.COVERAGE)} %`],
+                ['Pruebas ejecutadas / fallidas', `${num(process.env.TESTS_TOTAL)} / ${num(process.env.TESTS_FAILED)}`],
+                ['Build y pruebas', `${dur('1.')} s`],
+                ['Imagen Docker + escaneo', `${dur('3.')} s`],
+                ['Despliegue docker compose', `${dur('4.')} s`],
+                ['Despliegue Kubernetes', `${dur('4b.')} s`],
+                ['Tiempo total del pipeline', `${total} s`],
+                ['Resultado', ok ? 'OK' : 'FALLÓ'],
+              ])
+              .write();
+
+      - name: Subir métricas como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-metrics
+          path: ci-metrics.prom
+          retention-days: 30
+
+  # ------------------------------------------------------------
   # 5. Alerta: si algo falla en main o dev se avisa
   # deja un error visible en el run y en el resumen, y además intenta abrir un issue
   # (si el repo tiene los issues desactivados no se cae, solo avisa en el log)
@@ -570,7 +894,7 @@ jobs:
   notify-failure:
     name: 5. Alerta de falla
     runs-on: ubuntu-latest
-    needs: [ build-test, security-scan, code-analysis, docker-build, deploy, deploy-k8s ]
+    needs: [ build-test, security-scan, code-analysis, audit, docker-build, deploy, deploy-k8s, deploy-eks ]
     if: failure() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/develop')
     permissions:
       issues: write
@@ -586,9 +910,11 @@ jobs:
             echo "| 1. Build y pruebas | ${{ needs.build-test.result }} |"
             echo "| 2. Snyk | ${{ needs.security-scan.result }} |"
             echo "| 2. SonarCloud | ${{ needs.code-analysis.result }} |"
+            echo "| 2c. Auditoría | ${{ needs.audit.result }} |"
             echo "| 3. Imagen Docker | ${{ needs.docker-build.result }} |"
             echo "| 4. Despliegue compose | ${{ needs.deploy.result }} |"
             echo "| 4b. Despliegue Kubernetes | ${{ needs.deploy-k8s.result }} |"
+            echo "| 4d. Despliegue AWS EKS | ${{ needs.deploy-eks.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Crear issue de alerta
